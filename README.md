@@ -79,11 +79,28 @@ Nothing is held open, so builds also finish. Verified on Modal:
 It is deliberately **not** wired into `arch_nix.py`: that image is generic, and
 most uses only need substitution.
 
-### Alternatives not tried
+### A real VM does fix it -- but only for Sandboxes
 
-* `experimental_options={"vm_runtime": True}` runs a Sandbox on a real VM
-  instead of gVisor, where the pty should behave normally. Documented for
-  Sandboxes; unclear whether image builds can opt in.
+`experimental_options={"vm_runtime": True}` works, and the pty behaves. Probed
+against the `arch-nix` image, one Sandbox each way:
+
+| | kernel | `nix build` without the shim |
+|---|---|---|
+| gVisor (default) | `4.19.0-gvisor` | `error: unexpected EOF reading a line` |
+| `vm_runtime` | `6.12.8+` | builds |
+
+The catch is scope: [the docs](https://modal.com/docs/guide/vm-sandboxes) say
+this is **Sandboxes only, not Functions**. Passing it to `@app.function` is
+refused outright -- `Unknown experimental option: vm_runtime` -- and the
+underlying `runtime` field ("runc" or "gvisor" in the proto) is refused too:
+`MODAL_FUNCTION_RUNTIME must be set to 'gvisor'`.
+
+So for anything built on Functions -- which is everything in `containers/` --
+gVisor is mandatory and the shim is permanent. A Sandbox-backed container
+would be the way to escape it, at the cost of no GPUs, static memory, and a
+512 GiB image cap.
+### Alternatives still not tried
+
 * Older nix wrote the handshake down a plain pipe rather than a pty. Arch ships
   2.35.2. Installing 2.24/2.28 from the Arch archive failed on
   `libboost_context` and `liblowdown` version pins.
@@ -142,6 +159,20 @@ none of the workdir copies. So `_loader.py` ships three things there
 explicitly: itself via `add_local_python_source`, the `container.toml` it
 reads, and -- since none of the local tree exists out there -- a `MODAL_TASK_ID`
 check that skips validation and image-building on the remote pass.
+
+### Sandboxes get the VM
+
+`containers/sandbox-hello` is the same devShell app with
+`runtime = "sandbox"`. Verified: kernel `6.12.8+`, and `nix build` works there
+with no `LD_PRELOAD` at all.
+
+    scripts/deploy sandbox-hello
+    scripts/deploy sandbox-hello -c 'cat /proc/version'
+
+The image is still built under gVisor, so `[nix] shim` stays on for the build
+and is dropped from the run-time command. For a build that should run and then
+exit, a sandbox is the better fit than a function: the command is the
+sandbox's own process, so it dies when the build does.
 
 ### `[nix] shim`
 

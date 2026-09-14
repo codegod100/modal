@@ -3,10 +3,14 @@
 ;;
 ;;   scripts/new-container NAME [options]
 ;;
-;; The baseline is tuned for fast boot: the published arch-nix image, a real
-;; VM instead of gVisor, and no nix at run time. Nothing is substituted at
-;; build time, so the image builds in seconds and a container starts straight
-;; into the command.
+;; The baseline is tuned for fast boot: the published arch-nix image and no
+;; nix at run time. Nothing is substituted at build time, so the image builds
+;; in seconds and a container starts straight into the command.
+;;
+;; Containers run under gVisor. That is not a choice -- the server refuses any
+;; other runtime ("MODAL_FUNCTION_RUNTIME must be set to 'gvisor'"), and
+;; vm_runtime is rejected outright as an unknown experimental option. See
+;; ../README.md.
 ;;
 ;; --flake adds a devShell. It is a different tradeoff on purpose: the build
 ;; then has to substitute the shell's whole closure, and every start pays a
@@ -24,11 +28,10 @@
   (System/exit 1))
 
 (def help
-  (str "usage: scripts/new-container NAME [--flake] [--gvisor] [--base IMAGE]\n"
+  (str "usage: scripts/new-container NAME [--flake] [--base IMAGE]\n"
        "\n"
        "  --flake        add flake.nix and run the command inside `nix develop`.\n"
        "                 Implies the ptyshim under gVisor, and a slower build.\n"
-       "  --gvisor       do not ask for a real VM (drops [experimental] vm_runtime)\n"
        "  --base IMAGE   published Modal image to build on (default: arch-nix)\n"
        "  --force        overwrite an existing containers/NAME\n"))
 
@@ -38,7 +41,6 @@
       (nil? a)             opts
       (#{"-h" "--help"} a) (assoc opts :help true)
       (= a "--flake")      (recur more (assoc opts :flake true))
-      (= a "--gvisor")     (recur more (assoc opts :vm false))
       (= a "--force")      (recur more (assoc opts :force true))
       (= a "--base")       (if-let [v (first more)]
                              (recur (rest more) (assoc opts :base v))
@@ -52,7 +54,7 @@
 
 ;; -- templates -------------------------------------------------------------
 
-(defn- container-toml [{:keys [name base flake vm]}]
+(defn- container-toml [{:keys [name base flake]}]
   (str "[container]\n"
        "name        = \"" name "\"\n"
        "description = \"\"\n"
@@ -80,12 +82,9 @@
               "flake = false\n"
               "shim  = false\n"))
        "\n"
-       "[experimental]\n"
-       (if vm
-         (str "# Run on a real VM rather than gVisor. Unvalidated by the client:\n"
-              "# an unrecognised key here is ignored rather than refused.\n"
-              "vm_runtime = true\n")
-         "# vm_runtime = true\n")))
+       "# [experimental] is passed verbatim to @app.function(experimental_options=).\n"
+       "# The server validates the keys and rejects unknown ones, so do not guess:\n"
+       "# vm_runtime, for one, is refused. Containers run under gVisor either way.\n"))
 
 (def container-py
   (str "\"\"\"Generated stub -- the container is defined by container.toml.\n"
@@ -111,7 +110,7 @@
        "\n"
        "@app.local_entrypoint()\n"
        "def main(command: str = \"\"):\n"
-       "    print(run.remote(command), end=\"\")\n"))
+       "    print(c.launch(run, command), end=\"\")\n"))
 
 (def main-py
   (str "#!/usr/bin/env python3\n"
@@ -154,7 +153,7 @@
        "    };\n"
        "}\n"))
 
-(defn- readme [{:keys [name base flake vm]}]
+(defn- readme [{:keys [name base flake]}]
   (str "# `" name "`\n"
        "\n"
        "    scripts/deploy " name "\n"
@@ -163,12 +162,10 @@
        "Defined by `container.toml`; see `../spec.md` for the keys.\n"
        "Built on the published `" base "` image.\n"
        "\n"
-       (if vm
-         (str "Asks for a real VM (`[experimental] vm_runtime`) rather than gVisor.\n"
-              "The client does not validate that key, so if the workspace does not\n"
-              "offer it the request is ignored rather than refused -- the way to\n"
-              "tell is behavioural, not from the logs.\n")
-         "Runs under gVisor, Modal's default.\n")
+       "Runs under gVisor. The workspace permits nothing else -- the server\n"
+       "refuses `MODAL_FUNCTION_RUNTIME=runc` and rejects `vm_runtime` as an\n"
+       "unknown experimental option -- so the ptyshim is permanent, not a\n"
+       "stopgap. See ../../README.md.\n"
        "\n"
        (if flake
          (str "`flake.nix` provides the devShell the command runs inside. The build\n"

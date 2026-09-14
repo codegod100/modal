@@ -3,7 +3,7 @@
 ;;
 ;;   scripts/deploy NAME              build + run once, print the output
 ;;   scripts/deploy NAME --deploy     publish the app instead of running it
-;;   scripts/deploy NAME -- CMD...    override [run] command for this run
+;;   scripts/deploy NAME -c "CMD"     override [run] command for this run
 ;;   scripts/deploy --list            list the containers in this repo
 ;;
 ;; Everything about the container comes from its container.toml. This script
@@ -29,18 +29,23 @@
        sort))
 
 (def help
-  (str "usage: scripts/deploy NAME [--deploy] [--rebuild-base] [-- COMMAND...]\n"
+  (str "usage: scripts/deploy NAME [--deploy] [--rebuild-base] [-c CMD]\n"
        "       scripts/deploy --list\n"
        "\n"
        "  --deploy         `modal deploy` instead of running once\n"
        "  --rebuild-base   run arch_nix.py first, republishing arch-nix\n"
-       "  -- COMMAND...    override the container.toml [run] command\n"))
+       "  -c, --cmd CMD    override the container.toml [run] command\n"
+       "\n"
+       "(`--` is not usable as a separator here: jolt strips it before the\n"
+       " script sees its arguments.)\n"))
 
 (defn- parse-args [args]
   (loop [[a & more] args, opts {}]
     (cond
       (nil? a)               opts
-      (= a "--")             (assoc opts :command (str/join " " more))
+      (#{"-c" "--cmd"} a)    (if-let [v (first more)]
+                               (recur (rest more) (assoc opts :command v))
+                               (die "--cmd needs a value"))
       (#{"-h" "--help"} a)   (assoc opts :help true)
       (= a "--list")         (assoc opts :list true)
       (= a "--deploy")       (recur more (assoc opts :deploy true))

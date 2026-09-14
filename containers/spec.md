@@ -16,6 +16,7 @@ Only `[container] name` is required. Everything below shows its default.
 [container]
 name        = "hello"          # required; the Modal App name
 description = ""               # shown in the generated README and --help
+runtime     = "function"       # "function" (default) or "sandbox"
 
 # Exactly one of `base` (a published Modal image, from `.publish()`) or
 # `registry` (a Docker registry reference). `base` is the usual one here.
@@ -45,6 +46,33 @@ shim  = false                  # build ptyshim.so and LD_PRELOAD every nix call
 # vm_runtime = true
 ```
 
+## `runtime` -- Function or Sandbox
+
+A **Function** is code Modal runs for you: it imports your module in the
+container and you call it like a function. Autoscaled, warm-pooled, and
+gVisor-only.
+
+A **Sandbox** is a container you start and run commands in. Nothing of yours is
+imported. You control its lifetime, and it can run on a real VM -- which
+Functions cannot, at all.
+
+|                | `function`            | `sandbox`                     |
+|---|---|---|
+| invocation     | `f.remote(args)`      | the command is the process    |
+| runtime        | gVisor only           | gVisor or real VM             |
+| lifetime       | Modal decides         | dies when the command exits   |
+| GPU            | yes                   | no, on a VM                   |
+| memory         | elastic               | static, exactly what you ask  |
+
+`runtime = "sandbox"` turns on `vm_runtime` by default, and an explicit
+`[experimental]` table overrides that. For a build that should run and then
+die, `sandbox` is the right answer: the command *is* the sandbox's process, so
+there is no idle window and nothing to tear down.
+
+Note that `vm_runtime` is **Sandbox-only** -- the server rejects it on a
+Function outright -- so the loader never passes it to `@app.function`, even for
+a sandbox container whose vestigial function still gets registered.
+
 ## `[nix]`
 
 `flake = true` requires a `flake.nix` in the container directory with a
@@ -58,6 +86,11 @@ turns both on together.
 
 `shim` requires `base` to be an image with a C compiler on it -- `arch-nix`
 has one.
+
+A sandbox container on a VM still needs `shim = true`, because image **builds**
+run under gVisor regardless of what the container later runs on. The loader
+uses the shim for build steps and drops it from the run-time command, since a
+real VM has a working pty.
 
 ## What the loader guarantees
 
