@@ -162,6 +162,7 @@ class Container:
     def _build_image(self) -> modal.Image:
         c = self.spec["container"]
         build = self.spec.get("build", {})
+        nix_spec = self.spec.get("nix", {})
 
         if c.get("base"):
             image = modal.Image.from_name(c["base"])
@@ -200,13 +201,30 @@ class Container:
         # the container directory -- a container that builds the repo it lives
         # in sets context = "../..", so include = ["."] means the whole repo.
         context = os.path.normpath(os.path.join(self.dir, build.get("context", ".")))
+        # `ignore` is what keeps a build tree out of the image. A checkout that
+        # has been built in locally carries its output -- flutter/build and the
+        # caches beside it were 395MB of a 441MB repo -- and all of it would be
+        # uploaded on every start only to be thrown away, since the container
+        # builds into a volume of its own. Patterns are relative to the copied
+        # directory, as in .dockerignore.
+        ignore = list(build.get("ignore", []))
         for rel in build.get("include", ["."]):
             src = os.path.normpath(os.path.join(context, rel))
             dest = self.workdir if rel == "." else f"{self.workdir}/{rel}"
             if os.path.isdir(src):
-                image = image.add_local_dir(src, dest, copy=True)
+                image = image.add_local_dir(src, dest, copy=True, ignore=ignore)
             else:
                 image = image.add_local_file(src, dest, copy=True)
+
+        # Substituters for every nix command in the container, typed by hand or
+        # not. Without this the only things reading a mounted cache are the
+        # scripts that pass --extra-substituters, so an interactive shell
+        # rebuilds from source what the volume beside it already holds.
+        if subs := list(nix_spec.get("substituters", [])):
+            image = image.run_commands(
+                f"echo 'extra-substituters = {' '.join(subs)}'"
+                " >> /etc/nix/nix.conf"
+            )
 
         # A repo copied in brings its `.git` along, and in a worktree that is a
         # *file* holding `gitdir: <path on the machine that copied it>`. Nix
@@ -345,12 +363,20 @@ class Container:
         return ""
 
     def open_sandbox(self) -> "modal.Sandbox":
-        """Start a Sandbox and leave it running, for `scripts/shell`."""
+        """Start a Sandbox and leave it running, for `scripts/shell`.
+
+        Same workdir and the same [run] env as the real thing: a shell opened
+        to debug a container that does not have the container's environment is
+        a shell that reproduces something else. `command` is the one part left
+        out, because not running it is the point.
+        """
         return modal.Sandbox.create(
             "sleep",
             "infinity",
             app=self.app,
             image=self.image,
+            workdir=self.workdir,
+            env={k: str(v) for k, v in self.env.items()},
             **self.sandbox_kwargs,
         )
 
