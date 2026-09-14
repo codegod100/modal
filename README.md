@@ -122,7 +122,7 @@ fixed ML demos -- so this is local to this repo.
 
 `containers/hello` is the worked example: the `arch-nix` image, a devShell with
 `hello`, `jq`, `ripgrep`, `git` and `python3`, and an app that prints where each
-of those resolved.
+of those resolved. It runs as a Sandbox on a real VM.
 
     hello from the devShell
     python   3.14.7 at /nix/store/d64q19q1...-python3-3.14.7/bin/python3
@@ -162,12 +162,12 @@ check that skips validation and image-building on the remote pass.
 
 ### Sandboxes get the VM
 
-`containers/sandbox-hello` is the same devShell app with
-`runtime = "sandbox"`. Verified: kernel `6.12.8+`, and `nix build` works there
+`containers/hello` is a sandbox container -- `runtime = "sandbox"` -- so it
+runs on a real VM. Verified: kernel `6.12.8+`, and `nix build` works there
 with no `LD_PRELOAD` at all.
 
-    scripts/deploy sandbox-hello
-    scripts/deploy sandbox-hello -c 'cat /proc/version'
+    scripts/deploy hello
+    scripts/deploy hello -c 'cat /proc/version'
 
 The image is still built under gVisor, so `[nix] shim` stays on for the build
 and is dropped from the run-time command. For a build that should run and then

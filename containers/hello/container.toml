@@ -2,18 +2,27 @@
 name        = "hello"
 description = "A devShell app: prints where each of its nix tools resolved."
 base        = "arch-nix"
+# A Sandbox rather than a Function: it runs on a real VM instead of gVisor,
+# the command is the sandbox's own process so it dies when the command does,
+# and nothing of this repo is imported into it. See ../spec.md.
+runtime     = "sandbox"
 
 [build]
 include = ["."]
 
 [resources]
 timeout = 900
+# A VM sandbox gets exactly this and cannot burst into more.
+memory  = 2048
 
 [run]
 workdir = "/app"
 command = "python3 hello.py"
-env     = { HELLO_WHO = "a fresh Modal container" }
+env     = { HELLO_WHO = "a Sandbox on a real VM" }
 
 [nix]
+# shim is still required: the image BUILD runs under gVisor even though the
+# sandbox itself does not, and warming the devShell is a build step. The
+# loader drops it from the run-time command.
 flake = true
 shim  = true
