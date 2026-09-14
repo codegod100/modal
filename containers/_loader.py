@@ -208,6 +208,13 @@ class Container:
             else:
                 image = image.add_local_file(src, dest, copy=True)
 
+        # A repo copied in brings its `.git` along, and in a worktree that is a
+        # *file* holding `gitdir: <path on the machine that copied it>`. Nix
+        # believes it and goes looking for a checkout that is not there --
+        # `nix develop` and `nix build .#x` both die before evaluating
+        # anything. Nothing in a container wants the git metadata, so it goes.
+        image = image.run_commands(f"rm -rf {self.workdir}/.git")
+
         if commands := build.get("commands", []):
             image = image.run_commands(*commands)
 
