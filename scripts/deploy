@@ -13,7 +13,11 @@
          '[clojure.string :as str])
 
 (def repo
-  (-> *file* java.io.File. .getAbsoluteFile .getParentFile .getParentFile .getPath))
+  ;; Canonical, not absolute: this script is meant to be symlinked onto
+  ;; PATH, and only .getCanonicalFile follows the symlink back to the
+  ;; checkout. With .getAbsoluteFile the repo root would resolve to
+  ;; whatever directory the symlink lives in.
+  (-> *file* java.io.File. .getCanonicalFile .getParentFile .getParentFile .getPath))
 
 (def containers-dir (str repo "/containers"))
 
