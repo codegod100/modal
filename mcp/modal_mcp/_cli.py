@@ -54,6 +54,60 @@ def modal_bin() -> str:
     )
 
 
+def caller_env() -> dict[str, str | None]:
+    """Environment overrides that run the CLI as the authenticated caller.
+
+    Served over HTTP, each caller signs in with Modal and their own API token is
+    what commands run with. Over stdio there is no caller, and the local
+    ~/.modal.toml profile is used instead.
+
+    MODAL_IS_REMOTE is cleared deliberately. Inside a container the Modal client
+    treats it as authoritative and silently ignores token environment variables,
+    which would run every caller's commands with the container's own
+    workspace-wide identity -- a failure that is invisible rather than loud.
+    """
+    try:
+        from fastmcp.server.dependencies import get_access_token
+
+        token = get_access_token()
+    except Exception:
+        return {}
+    if token is None:
+        return {}
+    claims = getattr(token, "claims", None) or {}
+    token_id = claims.get("modal_token_id")
+    token_secret = claims.get("modal_token_secret")
+    if not token_id or not token_secret:
+        raise ModalCLIError(
+            ["<auth>"], 1, "",
+            "Authenticated request carried no Modal credentials; refusing to run "
+            "with the server's own identity.",
+        )
+    return {
+        "MODAL_IS_REMOTE": None,
+        "MODAL_TOKEN_ID": token_id,
+        "MODAL_TOKEN_SECRET": token_secret,
+        # The CLI must not fall back to a profile file for a remote caller.
+        "MODAL_PROFILE": None,
+    }
+
+
+def _build_env() -> dict[str, str]:
+    env = {**os.environ, "TERM": "dumb", "NO_COLOR": "1", "COLUMNS": "200"}
+    overrides = caller_env()
+    for key, value in overrides.items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
+    if overrides and env.get("MODAL_IS_REMOTE") == "1":
+        # Belt and braces: never let a caller's command run as the container.
+        raise ModalCLIError(
+            ["<auth>"], 1, "", "Refusing to run: MODAL_IS_REMOTE survived credential setup."
+        )
+    return env
+
+
 async def run(
     *args: str,
     timeout: int = DEFAULT_TIMEOUT,
@@ -66,8 +120,7 @@ async def run(
         *argv,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        # Keep the CLI's output machine-readable and non-interactive.
-        env={**os.environ, "TERM": "dumb", "NO_COLOR": "1", "COLUMNS": "200"},
+        env=_build_env(),
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout)

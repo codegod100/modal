@@ -1,5 +1,7 @@
 """FastMCP server exposing the local Modal CLI as tools."""
 
+import os
+
 from fastmcp import FastMCP
 
 from . import tools
@@ -62,14 +64,59 @@ WRITE_TOOLS = [
 ]
 
 
-def build_mcp() -> FastMCP:
-    mcp = FastMCP(name="modal", instructions=INSTRUCTIONS)
+def build_mcp(auth=None) -> FastMCP:
+    mcp = FastMCP(name="modal", instructions=INSTRUCTIONS, auth=auth)
     for fn in READ_TOOLS:
         mcp.tool(fn)
     if not read_only():
         for fn in WRITE_TOOLS:
             mcp.tool(fn)
     return mcp
+
+
+def build_asgi_app(base_url: str | None = None):
+    """ASGI app for remote serving, authenticated by signing in with Modal.
+
+    Callers run through an OAuth flow whose login step is Modal's device token
+    flow, so each one ends up acting as themselves: their own Modal token is
+    what the CLI runs with. There is no shared secret and no allowlist to keep
+    in sync -- authenticating *is* being that Modal user.
+
+    Requires MODAL_MCP_BASE_URL, the server's own public URL, because OAuth
+    metadata and the login redirect have to be absolute.
+    """
+    from .auth import ModalTokenFlowProvider
+
+    base_url = base_url or os.environ.get("MODAL_MCP_BASE_URL", "")
+    if not base_url:
+        raise RuntimeError(
+            "MODAL_MCP_BASE_URL must be set to this server's public URL "
+            "(e.g. https://workspace--modal-mcp.modal.run)."
+        )
+    allowed = [
+        w for w in os.environ.get("MODAL_MCP_ALLOWED_WORKSPACES", "").split(",") if w.strip()
+    ]
+    auth = ModalTokenFlowProvider(base_url=base_url, allowed_workspaces=allowed)
+    mcp = build_mcp(auth=auth)
+    # Deliberately NOT stateless: stateless mode drops the GET route on /mcp, so
+    # a client probing with GET gets a bare 405 with no WWW-Authenticate and
+    # cannot discover how to sign in. Auth state already pins this deployment to
+    # one container (see deploy.py), so sessions cost nothing extra.
+    app = mcp.http_app(path="/mcp")
+
+    # Clients are often given the bare origin rather than the full endpoint, and
+    # probe "/" directly. Redirect instead of 404ing: 307 preserves the method
+    # and body, so a POSTed MCP request survives the hop.
+    from starlette.responses import RedirectResponse
+    from starlette.routing import Route
+
+    async def _root(request):
+        return RedirectResponse("/mcp", status_code=307)
+
+    app.router.routes.append(
+        Route("/", _root, methods=["GET", "POST", "DELETE", "OPTIONS"])
+    )
+    return app
 
 
 def main() -> None:

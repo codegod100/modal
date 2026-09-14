@@ -1,24 +1,46 @@
 # modal-mcp
 
 An MCP server that exposes [Modal](https://modal.com) to an agent by driving the
-`modal` CLI already installed and authenticated on this machine.
+`modal` CLI rather than reimplementing Modal's API.
 
-There is no API client here and nothing to deploy. The server shells out to the
-CLI, so there are no tokens to manage, and features Modal adds to the CLI are
-reachable the day they ship.
+Run it locally over stdio against your own CLI login, or deploy it to Modal and
+sign in with your Modal account. Either way there is no token to copy around,
+and features Modal adds to the CLI are reachable the day they ship.
 
-## Setup
+## Two ways to run it
+
+### Hosted on Modal, sign in with Modal
 
 ```bash
-pip install modal          # if you don't have it
-modal token new            # one-time, opens a browser
-
 cd mcp && pip install -e .
+modal deploy deploy.py
+```
+
+Then add the printed URL as an MCP server, using the full endpoint path:
+
+```
+https://<workspace>--modal-mcp.modal.run/mcp
+```
+
+No secret, no API token, nothing to paste. The client discovers the server's
+OAuth metadata, registers itself, and sends you to Modal to sign in. Each caller
+ends up acting as themselves: their own Modal token is what their commands run
+with, so authenticating and being authorized are the same act.
+
+Restrict who may use it by setting `MODAL_MCP_ALLOWED_WORKSPACES` to a
+comma-separated list of workspace names. Without it, anyone who completes a
+Modal login can connect -- they act as their own account and cannot touch yours,
+but they can spend their own Modal compute through your server.
+
+### Locally over stdio
+
+```bash
+modal token new                       # one-time
 claude mcp add modal -- /path/to/mcp/.venv/bin/modal-mcp
 ```
 
-That's it. No deployment, no secret, no bearer token — the server runs locally
-over stdio and inherits your CLI login from `~/.modal.toml`.
+No deployment and no auth: the server runs on your machine and inherits your
+CLI login from `~/.modal.toml`.
 
 ## Tools
 
@@ -74,6 +96,34 @@ works across separate calls.
 | `MODAL_ENVIRONMENT` | Default environment for tools that don't name one. |
 | `MODAL_MCP_READ_ONLY` | Set to `1` to register only the 16 read-only tools. |
 | `MODAL_MCP_MODAL_BIN` | Path to the `modal` executable, if not beside the running interpreter or on `PATH`. |
+| `MODAL_MCP_BASE_URL` | Hosted only: the server's own public URL. OAuth metadata and the login redirect must be absolute. `deploy.py` sets it. |
+| `MODAL_MCP_ALLOWED_WORKSPACES` | Hosted only: comma-separated workspaces permitted to sign in. Unset means any Modal user may connect. |
+
+## How sign-in works
+
+Modal has no self-serve OAuth for third parties, but `modal token new` is an
+RFC 8628-style device grant: `TokenFlowCreate` returns a modal.com URL, the user
+approves in a browser, and `TokenFlowWait` yields their API token and workspace
+name. It works with `localhost_port=0`, so no local callback server is needed
+and it can be driven from a container.
+
+MCP clients only drive login automatically when the server implements the MCP
+authorization spec, so `auth.py` wraps that device flow in a standard OAuth 2.1
+server. FastMCP's `InMemoryOAuthProvider` supplies registration, PKCE, codes and
+refresh; only the "who is this user" step is replaced. `authorize()` cannot
+block for a browser login, so it redirects to a page that sends the user to
+Modal and polls until approval lands, then forwards to the client's redirect URI
+with an ordinary authorization code.
+
+Two consequences worth knowing:
+
+- **The server holds your Modal token**, in process memory only, never on disk.
+  That is inherent to server-managed calls and is what a real refresh token
+  would avoid.
+- **Sessions do not survive scaledown.** Auth state is in-process, so the
+  deployment pins `max_containers=1`; raising it would break sign-in
+  intermittently. With `min_containers=0` the container goes away when idle and
+  clients sign in again.
 
 ## Known limits
 
