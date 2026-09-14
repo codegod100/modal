@@ -1,6 +1,6 @@
-"""MCP server exposing Modal.com management tools."""
+"""MCP server exposing the local Modal CLI as tools."""
 
-__all__ = ["build_mcp", "build_asgi_app"]
+__all__ = ["build_mcp"]
 
 
 def __getattr__(name):

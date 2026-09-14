@@ -1,72 +1,24 @@
 # modal-mcp
 
-An MCP server that exposes [Modal](https://modal.com) workspace management as
-tools — and that runs on Modal itself.
+An MCP server that exposes [Modal](https://modal.com) to an agent by driving the
+`modal` CLI already installed and authenticated on this machine.
 
-26 tools covering apps, functions, logs, containers, sandboxes, volumes,
-secrets, and cost.
+There is no API client here and nothing to deploy. The server shells out to the
+CLI, so there are no tokens to manage, and features Modal adds to the CLI are
+reachable the day they ship.
 
 ## Setup
 
-### 1. Modal credentials
-
 ```bash
-pip install modal
-modal token new
+pip install modal          # if you don't have it
+modal token new            # one-time, opens a browser
+
+cd mcp && pip install -e .
+claude mcp add modal -- /path/to/mcp/.venv/bin/modal-mcp
 ```
 
-### 2. Deploy
-
-```bash
-pip install -e .
-modal deploy deploy.py
-```
-
-No secret and no Modal API token are needed. The container authenticates to
-Modal with its own task identity, which carries the permissions of the
-workspace it is deployed in.
-
-Modal prints the URL, e.g. `https://<workspace>--modal-mcp.modal.run`.
-The MCP endpoint is that URL + `/mcp`.
-
-### 3. Create a proxy token for callers
-
-The endpoint is deployed with `requires_proxy_auth=True`, so Modal rejects
-unauthorized requests at the edge — they never reach a container, and never
-cost anything.
-
-```bash
-modal workspace proxy-tokens create
-```
-
-That prints a token id (`wk-...`) and secret (`ws-...`). The secret is shown
-once.
-
-### 4. Connect a client
-
-Modal accepts the token pair as a single bearer header, joined with a period —
-the same shape MCP clients already send:
-
-```bash
-claude mcp add --transport http modal \
-  https://<workspace>--modal-mcp.modal.run/mcp \
-  --header "Authorization: Bearer wk-xxxx.ws-xxxx"
-```
-
-Check the guard is up — this should return 401:
-
-```bash
-curl -i https://<workspace>--modal-mcp.modal.run/health
-```
-
-## Running locally instead
-
-Over stdio, using your local `~/.modal.toml` profile — no secret or bearer
-token needed:
-
-```bash
-claude mcp add modal -- /path/to/modal-mcp/.venv/bin/modal-mcp
-```
+That's it. No deployment, no secret, no bearer token — the server runs locally
+over stdio and inherits your CLI login from `~/.modal.toml`.
 
 ## Tools
 
@@ -87,58 +39,48 @@ claude mcp add modal -- /path/to/modal-mcp/.venv/bin/modal-mcp
 **Storage** — `list_volumes`, `list_volume_files`, `read_volume_file`,
 `list_secrets`, `create_secret`, `list_dicts`, `list_queues`
 
+**Escape hatch** — `modal_cli(args="app list --json")` runs any `modal` command,
+including `--help`, for anything without a named tool.
+
 Apps are addressable by deployed name (`my-app`) or app ID (`ap-...`).
-Tools take an optional `environment`; omitted, they use the server's default.
+Tools take an optional `environment`; omitted, they use the CLI's default.
 
-Two behaviours worth knowing:
+## How it works
 
-- **Nothing blocks past 120s.** Modal caps web requests at 150s, so
-  `call_function` spawns the call and hands back a `function_call_id` with
-  status `pending` if it runs long — poll `get_function_call_result` rather than
-  losing the run. `sandbox_exec` is capped the same way.
-- **Sandboxes reap themselves.** `create_sandbox` defaults to a 600s lifetime and
-  a 300s idle timeout, since a forgotten sandbox bills until it stops.
+Most tools map onto a CLI command, preferring `--json`:
+
+| Tool | Command |
+| --- | --- |
+| `list_apps` | `modal app list --json` |
+| `get_app_logs` | `modal app logs <app> --since 30m --tail 200` |
+| `list_volume_files` | `modal volume ls <vol> <path> --json` |
+| `read_volume_file` | `modal volume get <vol> <path> -` |
+| `get_workspace_costs` | `modal billing summary --for "this month" --json` |
+
+Sandboxes and calls into deployed Functions have **no CLI subcommand**. Those
+tools generate a short Python script and run it with `modal run`, parsing one
+sentinel-prefixed JSON line out of the output. It costs a few seconds per call —
+measured at ~3s to create a sandbox and ~6s to exec in one — and everything else
+is a direct CLI invocation.
+
+A sandbox is created under a looked-up (persistent) app, so it outlives the
+ephemeral driver app and `create_sandbox` → `sandbox_exec` → `terminate_sandbox`
+works across separate calls.
 
 ## Configuration
 
 | Variable | Purpose |
 | --- | --- |
-| `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` | Optional. Act as a specific workspace. Unset, the server uses the container's own identity when deployed, or your `~/.modal.toml` profile locally. |
-| `MCP_AUTH_TOKEN` | Bearer token this app checks itself. Only needed when hosting somewhere without an authenticating proxy in front. Min 16 chars. |
-| `MODAL_MCP_TRUST_PROXY_AUTH` | Set to `1` when a proxy already authenticates callers. `deploy.py` sets it alongside `requires_proxy_auth=True`. |
 | `MODAL_ENVIRONMENT` | Default environment for tools that don't name one. |
 | `MODAL_MCP_READ_ONLY` | Set to `1` to register only the 16 read-only tools. |
+| `MODAL_MCP_MODAL_BIN` | Path to the `modal` executable, if not beside the running interpreter or on `PATH`. |
 
-## Cost
+## Known limits
 
-The deployed server scales to zero (`min_containers=0` in `deploy.py`), so an
-idle server costs nothing and the first call after a lull pays a cold start. Set
-`min_containers=1` to keep one warm — that bills continuously, so it's opt-in.
-
-## Notes on the design
-
-- **No API token needed when deployed.** A container authenticates with its own
-  task identity, which carries the permissions of the workspace the app runs in
-  — verified against a live workspace for both reads (`AppList`, `VolumeList`,
-  `SecretList`) and writes (Dict create/delete, Sandbox create/exec/terminate).
-  Tokens stay supported for acting as a different workspace, and in that case
-  the client must be built with `Client.from_credentials`, since `from_env()`
-  deliberately ignores those variables inside a container.
-- **Auth is mandatory over HTTP.** A Modal web function is public by default,
-  and these tools can run arbitrary code in the workspace (`create_sandbox` +
-  `sandbox_exec`) and spend money. `build_asgi_app()` refuses to start unless
-  either Modal proxy auth is trusted or `MCP_AUTH_TOKEN` is set — it never
-  defaults to open. Proxy auth is preferred: Modal manages and revokes the
-  tokens, and rejects bad requests at the edge, so a scanner hitting the URL
-  never starts a container.
-- **Stateless sessions.** Modal autoscales across containers with no session
-  affinity, so the HTTP transport runs in `stateless_http` mode.
-- **Secret values are never returned.** `list_secrets` reports names and
-  metadata only.
-- **Internal async API, deliberately.** The tools use Modal's `_Client` layer
-  rather than the public `.aio` interface. Most tools here are workspace
-  management calls with no public SDK equivalent, so they must go through
-  `client.stub` — the same path Modal's own CLI takes. The two layers cannot be
-  mixed: public `.aio` wrappers run on Modal's synchronizer loop, and passing our
-  client into one deadlocks, while a public client's raw `stub` calls lose
-  request cancellation. `modal_mcp/tools.py` documents this at the top.
+- **`get_app` cannot list an app's Functions.** Modal exposes no way to read a
+  deployed App's layout: `App.registered_functions` is documented as not working
+  for an App fetched via `lookup`, and there is no CLI equivalent. The tool
+  returns app metadata, deployment history, and a dashboard URL instead.
+- **Sandbox and Function-call tools are slower** than the rest, for the reason
+  above.
+- **Secret values are never returned.** `list_secrets` reports names only.

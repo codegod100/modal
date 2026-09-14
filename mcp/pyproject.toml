@@ -1,7 +1,7 @@
 [project]
 name = "modal-mcp"
-version = "0.1.0"
-description = "MCP server exposing Modal.com management tools, deployable to Modal itself"
+version = "0.2.0"
+description = "MCP server exposing the local Modal CLI as tools"
 requires-python = ">=3.10"
 dependencies = [
     "modal~=1.5",
