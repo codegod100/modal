@@ -2,6 +2,26 @@
 
 Every tool returns plain JSON-serializable data. Protobuf responses are mapped
 by hand rather than dumped wholesale so the output stays small and stable.
+
+On the choice of API layer
+--------------------------
+This module uses Modal's internal async layer (`_Client`, `_Function`,
+`_Sandbox`, ...) rather than the public `.aio` interface that Modal's docs
+recommend for ordinary async code. That is deliberate, and the two must not be
+mixed:
+
+* Most tools here are workspace management calls (AppList, SecretList, TaskList,
+  billing, ...) that have no public SDK equivalent. They can only be made as raw
+  gRPC via `client.stub`, which is exactly what Modal's own CLI does.
+* The public `.aio` wrappers run on Modal's synchronizer event loop. Our client
+  is created on the server's own loop, and passing it into a public wrapper
+  deadlocks. Conversely, a public client's raw `stub` calls run outside their
+  cancellation context, so every management RPC would lose cancellation support
+  and log a warning.
+
+Staying entirely on the internal layer keeps one client, on one loop, with
+working request cancellation. The tradeoff is dependence on private API, which
+is already unavoidable for the management RPCs.
 """
 
 import json
@@ -14,17 +34,22 @@ from google.protobuf.empty_pb2 import Empty
 from modal._logs import LogsFilters, fetch_logs
 from modal.app import _App
 from modal.client import _Client
-from modal.exception import NotFoundError
+from modal.exception import InvalidError, NotFoundError
 from modal.functions import _Function, _FunctionCall
 from modal.image import _Image
 from modal.sandbox import _Sandbox
 from modal.secret import _Secret
 from modal.volume import FileEntryType, _Volume
+from modal._workspace import _Workspace
 from modal_proto import api_pb2
 
 from ._client import env_or_default, get_client
 
 APP_ID_RE = re.compile(r"^ap-[a-zA-Z0-9]{22}$")
+
+# Modal web endpoints enforce a 150s maximum HTTP request duration. Any tool that
+# waits must return before then, or the caller just sees the connection die.
+MAX_WAIT_SECONDS = 120
 
 APP_STATE_NAMES = {
     api_pb2.APP_STATE_DEPLOYED: "deployed",
@@ -135,12 +160,15 @@ async def whoami() -> dict:
     resp = await client.stub.WorkspaceNameLookup(Empty())
     envs = await client.stub.EnvironmentList(Empty())
     default_env = next((e.name for e in envs.items if e.default), None)
+    dashboard = await client.stub.WorkspaceDashboardUrlGet(
+        api_pb2.WorkspaceDashboardUrlRequest(environment_name=default_env or "")
+    )
     return {
-        "workspace_name": resp.workspace_name,
+        "workspace_name": resp.workspace_name or None,
         "username": resp.username,
         "default_environment": default_env,
         "environments": [e.name for e in envs.items],
-        "dashboard_url": f"https://modal.com/apps/{resp.workspace_name}",
+        "dashboard_url": dashboard.url,
     }
 
 
@@ -163,21 +191,28 @@ async def list_environments() -> list[dict]:
     ]
 
 
-async def get_workspace_costs(days: int = 7) -> dict:
-    """Metered and billed cost for the workspace over a recent window."""
-    if days < 1 or days > 365:
-        raise ValueError("days must be between 1 and 365")
+async def get_workspace_costs(cycle: str | None = None) -> dict:
+    """Cost summary for one monthly billing cycle.
+
+    `cycle` accepts "this month" (the default), "last month", or an ISO month
+    like "2026-08". Modal aligns billing summaries to month boundaries, so
+    arbitrary date ranges are not supported here.
+    """
     client = await get_client()
-    start = int((datetime.now(tz=timezone.utc) - timedelta(days=days)).timestamp())
-    resp = await client.stub.WorkspaceBillingSummary(
-        api_pb2.WorkspaceBillingSummaryRequest(start_timestamp=start)
-    )
+    workspace = _Workspace.from_context(client=client)
+    try:
+        summary = await workspace.billing.summary(cycle=cycle)
+    except (ValueError, InvalidError) as exc:
+        raise ValueError(
+            f"{exc} Pass 'this month', 'last month', or a month like '2026-08'."
+        ) from exc
     return {
-        "start": _ts(resp.start_timestamp),
-        "end": _ts(resp.end_timestamp),
-        "metered_cost_usd": round(resp.metered_cost, 4),
-        "billed_cost_usd": round(resp.billed_cost, 4),
-        "breakdown_usd": {k: round(v, 4) for k, v in resp.metered_cost_breakdown.items()},
+        "cycle_start": summary.start.isoformat(),
+        "cycle_end": summary.end.isoformat(),
+        "metered_cost_usd": str(summary.metered_cost),
+        "billed_cost_usd": str(summary.billed_cost),
+        "breakdown_usd": {k: str(v) for k, v in summary.metered_cost_breakdown.items()},
+        "adjustments_usd": {k: str(v) for k, v in summary.adjustments.items()},
     }
 
 
@@ -369,9 +404,14 @@ async def call_function(
     function: str,
     args: str | None = None,
     kwargs: str | None = None,
+    timeout_seconds: float = MAX_WAIT_SECONDS,
     environment: str | None = None,
 ) -> dict:
-    """Call a deployed Modal function and wait for its result."""
+    """Call a deployed Modal function and wait for its result.
+
+    Waits at most 120s. If the function is still running, returns status
+    "pending" with a function_call_id to poll via get_function_call_result.
+    """
     client = await get_client()
     pos = _parse_payload(args, "args") or []
     kw = _parse_payload(kwargs, "kwargs") or {}
@@ -380,15 +420,34 @@ async def call_function(
     if not isinstance(kw, dict):
         raise ValueError("kwargs must be a JSON object")
 
+    wait = min(max(timeout_seconds, 1), MAX_WAIT_SECONDS)
     fn = _Function.from_name(
         app, function, environment_name=env_or_default(environment) or None
     )
     await fn.hydrate(client)
+
+    # Spawned rather than called directly: if the wait runs out we can still hand
+    # back a function_call_id for the caller to poll, instead of orphaning the run.
     started = time.monotonic()
-    result = await fn.remote(*pos, **kw)
+    call = await fn.spawn(*pos, **kw)
+    try:
+        result = await call.get(timeout=wait)
+    except TimeoutError:
+        return {
+            "app": app,
+            "function": function,
+            "status": "pending",
+            "function_call_id": call.object_id,
+            "waited_seconds": wait,
+            "hint": (
+                "Still running after the wait limit. Poll get_function_call_result "
+                f"with function_call_id={call.object_id!r}."
+            ),
+        }
     return {
         "app": app,
         "function": function,
+        "status": "done",
         "duration_seconds": round(time.monotonic() - started, 3),
         "result": _json_safe(result),
     }
@@ -425,10 +484,11 @@ async def get_function_call_result(
     function_call_id: str, timeout_seconds: float = 0
 ) -> dict:
     """Fetch the result of a spawned call. timeout_seconds=0 returns immediately."""
+    wait = min(max(timeout_seconds, 0), MAX_WAIT_SECONDS)
     client = await get_client()
     call = _FunctionCall._new_hydrated(function_call_id, client, None)
     try:
-        result = await call.get(timeout=timeout_seconds)
+        result = await call.get(timeout=wait)
     except TimeoutError:
         return {"function_call_id": function_call_id, "status": "pending"}
     return {
@@ -502,12 +562,18 @@ async def create_sandbox(
     image: str = "python:3.12-slim",
     command: str | None = None,
     timeout_seconds: int = 600,
+    idle_timeout_seconds: int | None = 300,
     cpu: float | None = None,
     memory_mb: int | None = None,
     gpu: str | None = None,
     environment: str | None = None,
 ) -> dict:
-    """Start a sandbox VM from a public registry image. Run commands in it with sandbox_exec."""
+    """Start a sandbox VM from a public registry image. Run commands in it with sandbox_exec.
+
+    The sandbox bills until it stops, so it terminates after `timeout_seconds`
+    at the latest, and after `idle_timeout_seconds` with no command running.
+    Pass idle_timeout_seconds=null to keep it alive while idle.
+    """
     client = await get_client()
     env = env_or_default(environment) or None
     app = await _App.lookup(
@@ -520,6 +586,7 @@ async def create_sandbox(
         app=app,
         image=img,
         timeout=timeout_seconds,
+        idle_timeout=idle_timeout_seconds,
         cpu=cpu,
         memory=memory_mb,
         gpu=gpu,
@@ -531,6 +598,7 @@ async def create_sandbox(
         "app": _SANDBOX_APP,
         "image": image,
         "timeout_seconds": timeout_seconds,
+        "idle_timeout_seconds": idle_timeout_seconds,
         "hint": "Use sandbox_exec to run commands, terminate_sandbox when done.",
     }
 
@@ -543,11 +611,10 @@ async def sandbox_exec(
     max_output_chars: int = 20000,
 ) -> dict:
     """Run a shell command inside a running sandbox and return its output."""
+    wait = min(max(timeout_seconds, 1), MAX_WAIT_SECONDS)
     client = await get_client()
     sb = await _Sandbox.from_id(sandbox_id, client=client)
-    proc = await sb.exec(
-        "sh", "-c", command, workdir=workdir, timeout=timeout_seconds
-    )
+    proc = await sb.exec("sh", "-c", command, workdir=workdir, timeout=wait)
     stdout = await proc.stdout.read()
     stderr = await proc.stderr.read()
     returncode = await proc.wait()

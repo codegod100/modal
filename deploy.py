@@ -12,8 +12,6 @@ See README.md for the one-liner that creates it.
 
 import modal
 
-from modal_mcp.server import build_asgi_app
-
 APP_NAME = "modal-mcp"
 SECRET_NAME = "modal-mcp"
 
@@ -34,12 +32,20 @@ secret = modal.Secret.from_name(
 @app.function(
     image=image,
     secrets=[secret],
-    # A warm container keeps tool latency low; drop to 0 to pay only per request.
-    min_containers=1,
+    # Scales to zero: an idle server costs nothing, at the price of a cold start
+    # on the first call. Set min_containers=1 to keep one warm instead — that
+    # bills continuously, so it is opt-in.
+    min_containers=0,
     scaledown_window=300,
+    # Modal caps any web request at 150s regardless of this value; the tools keep
+    # their own waits under that. The headroom is for slow cold starts.
     timeout=900,
 )
 @modal.concurrent(max_inputs=20)
 @modal.asgi_app(label=APP_NAME)
 def mcp_server():
+    # Imported here rather than at module scope so that deploying only needs
+    # `modal` installed locally, not the server's own dependencies.
+    from modal_mcp.server import build_asgi_app
+
     return build_asgi_app()
