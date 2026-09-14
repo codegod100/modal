@@ -1,275 +1,320 @@
-#!/usr/bin/env jolt
-;; Generate a baseline container under containers/<name>/.
-;;
-;;   scripts/new-container NAME [options]
-;;
-;; The baseline is tuned for fast boot: the published arch-nix image and no
-;; nix at run time. Nothing is substituted at build time, so the image builds
-;; in seconds and a container starts straight into the command.
-;;
-;; Containers are Sandboxes by default: a real VM rather than gVisor, and the
-;; command is the container's own process, so it dies when the command does.
-;; That is the shape a build wants. --function instead registers a Modal
-;; Function -- code Modal imports and calls, gVisor-only, lifetime managed for
-;; you -- which is what you want for something served rather than run once.
-;;
-;; The generated container.toml always states its runtime explicitly, so the
-;; loader's own default never comes into it. See ../README.md.
-;;
-;; --flake adds a devShell. It is a different tradeoff on purpose: the build
-;; then has to substitute the shell's whole closure, and every start pays a
-;; `nix develop` evaluation. Use it when you want the tools, not by default.
+#!/usr/bin/env python3
+"""Generate a baseline container under containers/<name>/.
 
-(require '[babashka.process :as p]
-         '[clojure.string :as str])
+    scripts/new-container NAME [options]
 
-(def repo
-  ;; Canonical, not absolute: this script is meant to be symlinked onto
-  ;; PATH, and only .getCanonicalFile follows the symlink back to the
-  ;; checkout. With .getAbsoluteFile the repo root would resolve to
-  ;; whatever directory the symlink lives in.
-  (-> *file* java.io.File. .getCanonicalFile .getParentFile .getParentFile .getPath))
+The baseline is tuned for fast boot: the published arch-nix image and no
+nix at run time. Nothing is substituted at build time, so the image builds
+in seconds and a container starts straight into the command.
 
-(defn- die [& msg]
-  (binding [*out* *err*]
-    (println (str/join " " (cons "new-container:" msg))))
-  (System/exit 1))
+Containers are Sandboxes by default: a real VM rather than gVisor, and the
+command is the container's own process, so it dies when the command does.
+That is the shape a build wants. --function instead registers a Modal
+Function -- code Modal imports and calls, gVisor-only, lifetime managed for
+you -- which is what you want for something served rather than run once.
 
-(def help
-  (str "usage: scripts/new-container NAME [--function] [--flake] [--base IMAGE]\n"
-       "\n"
-       "  (default)      a Sandbox on a real VM: runs its command as its own\n"
-       "                 process and dies with it\n"
-       "  --function     a Modal Function instead -- gVisor only, lifetime\n"
-       "                 managed by Modal. For served code, not one-shot runs.\n"
-       "  --flake        add flake.nix and run the command inside `nix develop`.\n"
-       "                 Implies the ptyshim under gVisor, and a slower build.\n"
-       "  --base IMAGE   published Modal image to build on (default: arch-nix)\n"
-       "  --force        overwrite an existing containers/NAME\n"))
+The generated container.toml always states its runtime explicitly, so the
+loader's own default never comes into it. See ../README.md.
 
-(defn- parse-args [args]
-  (loop [[a & more] args, opts {:base "arch-nix" :runtime "sandbox"}]
-    (cond
-      (nil? a)             opts
-      (#{"-h" "--help"} a) (assoc opts :help true)
-      (= a "--flake")      (recur more (assoc opts :flake true))
-      (= a "--sandbox")    (recur more (assoc opts :runtime "sandbox"))
-      (= a "--function")   (recur more (assoc opts :runtime "function"))
-      (= a "--force")      (recur more (assoc opts :force true))
-      (= a "--base")       (if-let [v (first more)]
-                             (recur (rest more) (assoc opts :base v))
-                             (die "--base needs a value"))
-      (str/starts-with? a "-") (die "unknown option" (pr-str a) "-- try --help")
-      (:name opts)         (die "give exactly one name")
-      :else                (recur more (assoc opts :name a)))))
+--flake adds a devShell. It is a different tradeoff on purpose: the build
+then has to substitute the shell's whole closure, and every start pays a
+`nix develop` evaluation. Use it when you want the tools, not by default.
+"""
 
-(defn- valid-name? [n]
-  (boolean (re-matches #"[a-z][a-z0-9-]*" n)))
+import os
+import subprocess
+import sys
 
-;; -- templates -------------------------------------------------------------
+# The directory you ran from, not the checkout this script lives in. It is
+# on PATH via a symlink and is meant to scaffold a container into whatever
+# repo you are standing in, so the caller's cwd is the answer; resolving the
+# symlink back to its own checkout would ignore you.
+CWD = os.getcwd()
 
-(defn- container-toml [{:keys [name base flake runtime]}]
-  (str "[container]\n"
-       "name        = \"" name "\"\n"
-       "description = \"\"\n"
-       "base        = \"" base "\"\n"
-       (if (= runtime "sandbox")
-         (str "# A Sandbox, not a Function: runs on a real VM, and the command is\n"
-              "# the sandbox's own process so it dies when the command does.\n"
-              "runtime     = \"sandbox\"\n")
-         (str "# A Function: Modal imports this module in the container and calls\n"
-              "# it. gVisor only. Use runtime = \"sandbox\" for a real VM.\n"
-              "runtime     = \"function\"\n"))
-       "\n"
-       "[build]\n"
-       "include = [\".\"]\n"
-       "\n"
-       "[resources]\n"
-       "timeout = 900\n"
-       "\n"
-       "[run]\n"
-       "workdir = \"/app\"\n"
-       "command = \"python3 main.py\"\n"
-       "env     = { GREETING = \"hello from " name "\" }\n"
-       "\n"
-       "[nix]\n"
-       (if flake
-         (str "# The devShell is warmed at build time so its store paths bake in.\n"
-              "# That build substitutes the whole closure, so it is not quick.\n"
-              "flake = true\n"
-              "shim  = true\n")
-         (str "# Off by default: nothing to substitute at build time, nothing to\n"
-              "# evaluate at start. Turn both on together if you add a flake.nix.\n"
-              "flake = false\n"
-              "shim  = false\n"))
-       "\n"
-       (if (= runtime "sandbox")
-         (str "# [experimental] overrides the sandbox default of vm_runtime = true.\n"
-              "# Setting it here turns that default off, so leave it alone unless you\n"
-              "# want gVisor.\n")
-         (str "# [experimental] is passed verbatim to experimental_options. The server\n"
-              "# validates the keys, so do not guess -- vm_runtime in particular is\n"
-              "# refused on a Function; it is Sandbox-only.\n"))))
+HELP = """usage: scripts/new-container NAME [--function] [--flake] [--base IMAGE]
 
-(def sandbox-py
-  (str
-       "\"\"\"Generated stub -- the container is defined by container.toml.\n"
-       "\n"
-       "Edit container.toml, not this file.\n"
-       "\"\"\"\n"
-       "\n"
-       "import os\n"
-       "import sys\n"
-       "\n"
-       "sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))\n"
-       "\n"
-       "from _loader import Container  # noqa: E402\n"
-       "\n"
-       "c = Container.from_toml(__file__)\n"
-       "image, app = c.image, c.app\n"
-       "\n"
-       "\n"
-       "# No @app.function here: a Sandbox runs its command as its own process and\n"
-       "# nothing of this module is imported into it. Registering a Function would be\n"
-       "# dead weight, and its kwargs are where vm_runtime would be wrongly applied.\n"
-       "@app.local_entrypoint()\n"
-       "def main(command: str = \"\"):\n"
-       "    c.run_sandbox(command)\n"))
+  (default)      a Sandbox on a real VM: runs its command as its own
+                 process and dies with it
+  --function     a Modal Function instead -- gVisor only, lifetime
+                 managed by Modal. For served code, not one-shot runs.
+  --flake        add flake.nix and run the command inside `nix develop`.
+                 Implies the ptyshim under gVisor, and a slower build.
+  --base IMAGE   published Modal image to build on (default: arch-nix)
+  --into DIR     scaffold into DIR/containers/ instead of the cwd
+  --force        overwrite an existing containers/NAME
+"""
 
-(def function-py
-  (str
-       "\"\"\"Generated stub -- the container is defined by container.toml.\n"
-       "\n"
-       "Edit container.toml, not this file.\n"
-       "\"\"\"\n"
-       "\n"
-       "import os\n"
-       "import sys\n"
-       "\n"
-       "sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))\n"
-       "\n"
-       "from _loader import Container  # noqa: E402\n"
-       "\n"
-       "c = Container.from_toml(__file__)\n"
-       "image, app = c.image, c.app\n"
-       "\n"
-       "\n"
-       "@app.function(**c.function_kwargs)\n"
-       "def run(command: str = \"\") -> str:\n"
-       "    return c.execute(command)\n"
-       "\n"
-       "\n"
-       "@app.local_entrypoint()\n"
-       "def main(command: str = \"\"):\n"
-       "    print(run.remote(command), end=\"\")\n"))
 
-(defn- container-py [runtime]
-  (if (= runtime "sandbox") sandbox-py function-py))
+def die(*msg):
+    print(" ".join(("new-container:",) + tuple(str(m) for m in msg)), file=sys.stderr)
+    raise SystemExit(1)
 
-(def main-py
-  (str "#!/usr/bin/env python3\n"
-       "\"\"\"The app. Replace this with something that earns its container.\"\"\"\n"
-       "\n"
-       "import os\n"
-       "import platform\n"
-       "\n"
-       "\n"
-       "def main():\n"
-       "    print(os.environ.get(\"GREETING\", \"hello\"))\n"
-       "    print(f\"python   {platform.python_version()}\")\n"
-       "    print(f\"host     {platform.node()} ({platform.machine()})\")\n"
-       "\n"
-       "\n"
-       "if __name__ == \"__main__\":\n"
-       "    main()\n"))
 
-(defn- flake-nix [{:keys [name]}]
-  (str "{\n"
-       "  description = \"" name " devShell\";\n"
-       "\n"
-       "  inputs.nixpkgs.url = \"github:NixOS/nixpkgs/nixos-unstable\";\n"
-       "\n"
-       "  outputs = { self, nixpkgs }:\n"
-       "    let\n"
-       "      systems = [ \"x86_64-linux\" \"aarch64-linux\" ];\n"
-       "      forAll = f: nixpkgs.lib.genAttrs systems\n"
-       "        (system: f nixpkgs.legacyPackages.${system});\n"
-       "    in\n"
-       "    {\n"
-       "      devShells = forAll (pkgs: {\n"
-       "        default = pkgs.mkShell {\n"
-       "          # Every path here is substituted into the image before the\n"
-       "          # shell can be entered, so keep it short. `git` is 404MB\n"
-       "          # and `python3` 220MB; arch-nix already has both.\n"
-       "          packages = with pkgs; [ jq ripgrep ];\n"
-       "        };\n"
-       "      });\n"
-       "    };\n"
-       "}\n"))
+def parse_args(args):
+    opts = {"base": "arch-nix", "runtime": "sandbox", "repo": CWD,
+            "name": None, "flake": False, "force": False, "help": False}
+    args = list(args)
+    while args:
+        a = args.pop(0)
+        if a in ("-h", "--help"):
+            opts["help"] = True
+            return opts
+        elif a == "--flake":
+            opts["flake"] = True
+        elif a == "--sandbox":
+            opts["runtime"] = "sandbox"
+        elif a == "--function":
+            opts["runtime"] = "function"
+        elif a == "--force":
+            opts["force"] = True
+        elif a == "--base":
+            if not args:
+                die("--base needs a value")
+            opts["base"] = args.pop(0)
+        elif a == "--into":
+            if not args:
+                die("--into needs a value")
+            opts["repo"] = os.path.abspath(args.pop(0))
+        elif a.startswith("-"):
+            die("unknown option", repr(a), "-- try --help")
+        elif opts["name"]:
+            die("give exactly one name")
+        else:
+            opts["name"] = a
+    return opts
 
-(defn- readme [{:keys [name base flake runtime]}]
-  (str "# `" name "`\n"
-       "\n"
-       "    scripts/deploy " name "\n"
-       "    modal run containers/" name "/container.py\n"
-       "\n"
-       "Defined by `container.toml`; see `../spec.md` for the keys.\n"
-       "Built on the published `" base "` image.\n"
-       "\n"
-       (if (= runtime "sandbox")
-         (str "Runs as a Sandbox on a real VM (kernel 6.x, not gVisor). The command\n"
-              "is the sandbox's own process, so it dies when the command exits --\n"
-              "no idle window and nothing to tear down. Note the VM restrictions:\n"
-              "no GPU, and memory is exactly what `[resources] memory` asks for.\n")
-         (str "Runs as a Function under gVisor. Functions cannot have a VM -- the\n"
-              "server refuses `MODAL_FUNCTION_RUNTIME=runc` and rejects `vm_runtime`\n"
-              "as an unknown experimental option -- so nix needs the ptyshim here.\n"
-              "Use `runtime = \"sandbox\"` if you want the VM. See ../../README.md.\n"))
-       "\n"
-       (if flake
-         (str "`flake.nix` provides the devShell the command runs inside. The build\n"
-              "warms it once so the store paths bake into the image; that substitution\n"
-              "is the slow part of the build, and every start still pays a `nix\n"
-              "develop` evaluation.\n")
-         (str "No nix at run time: nothing is substituted at build time and nothing\n"
-              "is evaluated at start. Add a `flake.nix` and set `[nix] flake`/`shim`\n"
-              "together if you want a devShell, knowing what it costs.\n"))))
 
-;; -- main ------------------------------------------------------------------
+def valid_name(n):
+    import re
+    return bool(re.fullmatch(r"[a-z][a-z0-9-]*", n))
 
-(defn- write! [path content]
-  (spit path content)
-  (println "  " (str/replace path (str repo "/") "")))
 
-(defn -main [& args]
-  (let [{:keys [name flake force] :as opts} (parse-args args)]
-    (when (:help opts) (print help) (System/exit 0))
-    (when-not name (print help) (System/exit 1))
-    (when-not (valid-name? name)
-      (die "name must be lowercase letters, digits and dashes:" (pr-str name)))
+# -- templates -------------------------------------------------------------
 
-    (let [dir (str repo "/containers/" name)
-          f   (java.io.File. dir)]
-      (when (and (.exists f) (not force))
-        (die "containers/" (str name " already exists -- pass --force")))
-      (.mkdirs f)
 
-      (println (str "containers/" name ":"))
-      (write! (str dir "/container.toml") (container-toml opts))
-      (write! (str dir "/container.py")   (container-py (:runtime opts)))
-      (write! (str dir "/main.py")        main-py)
-      (write! (str dir "/README.md")      (readme opts))
-      (when flake
-        (write! (str dir "/flake.nix") (flake-nix opts))
-        ;; nix refuses to look at a flake git does not know about.
-        (p/shell {:dir repo :continue true}
-                 "git" "add" (str "containers/" name "/flake.nix"))
-        (println "   (running nix flake lock)")
-        (p/shell {:dir dir :continue true} "nix" "flake" "lock"))
+def container_toml(opts):
+    name, base, flake, runtime = opts["name"], opts["base"], opts["flake"], opts["runtime"]
+    return (
+        "[container]\n"
+        f'name        = "{name}"\n'
+        'description = ""\n'
+        f'base        = "{base}"\n'
+        + ("# A Sandbox, not a Function: runs on a real VM, and the command is\n"
+           "# the sandbox's own process so it dies when the command does.\n"
+           'runtime     = "sandbox"\n'
+           if runtime == "sandbox" else
+           "# A Function: Modal imports this module in the container and calls\n"
+           '# it. gVisor only. Use runtime = "sandbox" for a real VM.\n'
+           'runtime     = "function"\n')
+        + "\n"
+        "[build]\n"
+        'include = ["."]\n'
+        "\n"
+        "[resources]\n"
+        "timeout = 900\n"
+        "\n"
+        "[run]\n"
+        'workdir = "/app"\n'
+        'command = "python3 main.py"\n'
+        f'env     = {{ GREETING = "hello from {name}" }}\n'
+        "\n"
+        "[nix]\n"
+        + ("# The devShell is warmed at build time so its store paths bake in.\n"
+           "# That build substitutes the whole closure, so it is not quick.\n"
+           "flake = true\n"
+           "shim  = true\n"
+           if flake else
+           "# Off by default: nothing to substitute at build time, nothing to\n"
+           "# evaluate at start. Turn both on together if you add a flake.nix.\n"
+           "flake = false\n"
+           "shim  = false\n")
+        + "\n"
+        + ("# [experimental] overrides the sandbox default of vm_runtime = true.\n"
+           "# Setting it here turns that default off, so leave it alone unless you\n"
+           "# want gVisor.\n"
+           if runtime == "sandbox" else
+           "# [experimental] is passed verbatim to experimental_options. The server\n"
+           "# validates the keys, so do not guess -- vm_runtime in particular is\n"
+           "# refused on a Function; it is Sandbox-only.\n"))
 
-      (println)
-      (println "next:")
-      (println (str "  edit containers/" name "/main.py"))
-      (println (str "  scripts/deploy " name)))))
 
-(apply -main *command-line-args*)
+SANDBOX_PY = '''"""Generated stub -- the container is defined by container.toml.
+
+Edit container.toml, not this file.
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from _loader import Container  # noqa: E402
+
+c = Container.from_toml(__file__)
+image, app = c.image, c.app
+
+
+# No @app.function here: a Sandbox runs its command as its own process and
+# nothing of this module is imported into it. Registering a Function would be
+# dead weight, and its kwargs are where vm_runtime would be wrongly applied.
+@app.local_entrypoint()
+def main(command: str = ""):
+    c.run_sandbox(command)
+'''
+
+FUNCTION_PY = '''"""Generated stub -- the container is defined by container.toml.
+
+Edit container.toml, not this file.
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from _loader import Container  # noqa: E402
+
+c = Container.from_toml(__file__)
+image, app = c.image, c.app
+
+
+@app.function(**c.function_kwargs)
+def run(command: str = "") -> str:
+    return c.execute(command)
+
+
+@app.local_entrypoint()
+def main(command: str = ""):
+    print(run.remote(command), end="")
+'''
+
+
+def container_py(runtime):
+    return SANDBOX_PY if runtime == "sandbox" else FUNCTION_PY
+
+
+MAIN_PY = '''#!/usr/bin/env python3
+"""The app. Replace this with something that earns its container."""
+
+import os
+import platform
+
+
+def main():
+    print(os.environ.get("GREETING", "hello"))
+    print(f"python   {platform.python_version()}")
+    print(f"host     {platform.node()} ({platform.machine()})")
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+
+def flake_nix(opts):
+    name = opts["name"]
+    return (
+        "{\n"
+        f'  description = "{name} devShell";\n'
+        "\n"
+        '  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";\n'
+        "\n"
+        "  outputs = { self, nixpkgs }:\n"
+        "    let\n"
+        '      systems = [ "x86_64-linux" "aarch64-linux" ];\n'
+        "      forAll = f: nixpkgs.lib.genAttrs systems\n"
+        "        (system: f nixpkgs.legacyPackages.${system});\n"
+        "    in\n"
+        "    {\n"
+        "      devShells = forAll (pkgs: {\n"
+        "        default = pkgs.mkShell {\n"
+        "          # Every path here is substituted into the image before the\n"
+        "          # shell can be entered, so keep it short. `git` is 404MB\n"
+        "          # and `python3` 220MB; arch-nix already has both.\n"
+        "          packages = with pkgs; [ jq ripgrep ];\n"
+        "        };\n"
+        "      });\n"
+        "    };\n"
+        "}\n")
+
+
+def readme(opts):
+    name, base, flake, runtime = opts["name"], opts["base"], opts["flake"], opts["runtime"]
+    return (
+        f"# `{name}`\n"
+        "\n"
+        f"    scripts/deploy {name}\n"
+        f"    modal run containers/{name}/container.py\n"
+        "\n"
+        "Defined by `container.toml`; see `../spec.md` for the keys.\n"
+        f"Built on the published `{base}` image.\n"
+        "\n"
+        + ("Runs as a Sandbox on a real VM (kernel 6.x, not gVisor). The command\n"
+           "is the sandbox's own process, so it dies when the command exits --\n"
+           "no idle window and nothing to tear down. Note the VM restrictions:\n"
+           "no GPU, and memory is exactly what `[resources] memory` asks for.\n"
+           if runtime == "sandbox" else
+           "Runs as a Function under gVisor. Functions cannot have a VM -- the\n"
+           "server refuses `MODAL_FUNCTION_RUNTIME=runc` and rejects `vm_runtime`\n"
+           "as an unknown experimental option -- so nix needs the ptyshim here.\n"
+           'Use `runtime = "sandbox"` if you want the VM. See ../../README.md.\n')
+        + "\n"
+        + ("`flake.nix` provides the devShell the command runs inside. The build\n"
+           "warms it once so the store paths bake into the image; that substitution\n"
+           "is the slow part of the build, and every start still pays a `nix\n"
+           "develop` evaluation.\n"
+           if flake else
+           "No nix at run time: nothing is substituted at build time and nothing\n"
+           "is evaluated at start. Add a `flake.nix` and set `[nix] flake`/`shim`\n"
+           "together if you want a devShell, knowing what it costs.\n"))
+
+
+# -- main ------------------------------------------------------------------
+
+
+def write(repo, path, content):
+    with open(path, "w") as f:
+        f.write(content)
+    # Flushed: git and nix below write straight to the fd, so a buffered
+    # stdout would print these lines after their output rather than before.
+    print("  ", path.replace(repo + "/", ""), flush=True)
+
+
+def main(args):
+    opts = parse_args(args)
+    if opts["help"]:
+        print(HELP, end="")
+        raise SystemExit(0)
+    name = opts["name"]
+    if not name:
+        print(HELP, end="")
+        raise SystemExit(1)
+    if not valid_name(name):
+        die("name must be lowercase letters, digits and dashes:", repr(name))
+
+    repo = opts["repo"]
+    d = os.path.join(repo, "containers", name)
+    if os.path.exists(d) and not opts["force"]:
+        die("containers/" + name + " already exists -- pass --force")
+    os.makedirs(d, exist_ok=True)
+
+    print(f"containers/{name}:")
+    write(repo, os.path.join(d, "container.toml"), container_toml(opts))
+    write(repo, os.path.join(d, "container.py"), container_py(opts["runtime"]))
+    write(repo, os.path.join(d, "main.py"), MAIN_PY)
+    write(repo, os.path.join(d, "README.md"), readme(opts))
+    if opts["flake"]:
+        write(repo, os.path.join(d, "flake.nix"), flake_nix(opts))
+        # nix refuses to look at a flake git does not know about.
+        subprocess.run(["git", "add", f"containers/{name}/flake.nix"], cwd=repo)
+        print("   (running nix flake lock)", flush=True)
+        subprocess.run(["nix", "flake", "lock"], cwd=d)
+
+    print()
+    print("next:")
+    print(f"  edit containers/{name}/main.py")
+    print(f"  scripts/deploy {name}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

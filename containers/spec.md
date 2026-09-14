@@ -51,8 +51,44 @@ env     = { }                  # environment variables
 flake = false                  # warm `nix develop` at build time, run inside it
 shim  = false                  # build ptyshim.so and LD_PRELOAD every nix call
 
+[volumes]                      # name = mount path; Modal Volumes, at run time
+# nix-cache = "/nix-cache"
+
 [experimental]                 # verbatim into @app.function(experimental_options=)
 # vm_runtime = true
+```
+
+## `[volumes]` -- state that outlives the container
+
+Each key is a Modal Volume name and each value an absolute mount path. The
+volume is created if it does not exist, so the first run of a cache is the one
+that fills it.
+
+```toml
+[volumes]
+nix-cache = "/nix-cache"
+```
+
+Mounted while the container **runs**, and not while its image is built. That is
+not an omission: a volume mount is not part of the resulting image, so anything
+written to one during a build step is gone by the time the container starts.
+Build-time population is `arch_nix.py`'s job, where paths are copied *out* of a
+volume and into the store so they bake in.
+
+Refused at validation: a relative path, and a mount over `/nix`, `/nix/store`,
+`/usr`, `/etc` or the workdir. An empty volume over any of those hides what the
+image already has there -- `/nix` being the expensive one, since the base image
+spent its build populating that store.
+
+Volumes are commit/reload rather than POSIX. Nothing written is durable until
+something calls `.commit()`, two containers writing one volume is last-write-
+wins with no locking, and a volume used as a nix cache needs the substituter
+pointed at it as well as mounted -- mounting alone changes nothing:
+
+```toml
+[run]
+command = """nix build path:/app#frq --extra-substituters file:///nix-cache \
+  && nix copy --no-check-sigs --to file:///nix-cache ./result"""
 ```
 
 ## `runtime` -- Function or Sandbox

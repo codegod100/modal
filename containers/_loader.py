@@ -51,6 +51,14 @@ class Container:
         self.use_flake = bool(nix.get("flake", False))
         self.use_shim = bool(nix.get("shim", False))
 
+        # name -> mount path. Modal Volumes, mounted while the container runs
+        # and NOT while its image is built: a volume mount is not part of the
+        # resulting image, so anything written to one during a build step is
+        # gone by the time the container starts. Persist across runs is the
+        # whole point -- a nix store to substitute from, a cargo target
+        # directory, a dataset too big to bake in.
+        self.volume_spec = dict(spec.get("volumes", {}))
+
         # Modal re-imports this module inside the container, so everything
         # below runs twice: once here, once out there. Out there the local
         # tree does not exist -- no flake.nix, no ptyshim.c, no repo -- and
@@ -102,6 +110,24 @@ class Container:
                 )
         if self.use_shim and not os.path.exists(PTYSHIM_C):
             raise SpecError(f"[nix] shim = true but {PTYSHIM_C} is missing")
+        for name, mount in self.volume_spec.items():
+            if not isinstance(mount, str) or not mount.startswith("/"):
+                raise SpecError(
+                    f"[volumes] {name} must be an absolute path, not {mount!r}"
+                )
+            # Mounting over one of these hides what the image already has
+            # there -- /nix in particular, where the empty volume would shadow
+            # the store the base image spent its build populating.
+            if mount.rstrip("/") in ("", "/nix", "/nix/store", "/usr", "/etc"):
+                raise SpecError(
+                    f"[volumes] {name} may not mount over {mount} --"
+                    " it would hide what the image has there"
+                )
+            if mount.rstrip("/") == self.workdir.rstrip("/"):
+                raise SpecError(
+                    f"[volumes] {name} may not mount over the workdir"
+                    f" ({mount}) -- [build] include copies land there"
+                )
 
     # -- image -----------------------------------------------------------
 
@@ -169,8 +195,12 @@ class Container:
             )
 
         # copy=True throughout: later run_commands need these files present.
+        # `context` is what include paths are relative to, and it may sit above
+        # the container directory -- a container that builds the repo it lives
+        # in sets context = "../..", so include = ["."] means the whole repo.
+        context = os.path.normpath(os.path.join(self.dir, build.get("context", ".")))
         for rel in build.get("include", ["."]):
-            src = os.path.join(self.dir, rel)
+            src = os.path.normpath(os.path.join(context, rel))
             dest = self.workdir if rel == "." else f"{self.workdir}/{rel}"
             if os.path.isdir(src):
                 image = image.add_local_dir(src, dest, copy=True)
@@ -195,6 +225,22 @@ class Container:
 
         return image
 
+    # -- volumes ---------------------------------------------------------
+
+    @property
+    def volumes(self) -> dict:
+        """{mount path: Volume}, as both Sandbox.create and @app.function want.
+
+        `from_name` is lazy, so this is safe to evaluate on the re-import
+        inside the container as well as out here. create_if_missing means a
+        spec naming a volume that does not exist yet makes it rather than
+        failing -- the first run of a cache is the one that fills it.
+        """
+        return {
+            mount: modal.Volume.from_name(name, create_if_missing=True)
+            for name, mount in self.volume_spec.items()
+        }
+
     # -- function --------------------------------------------------------
 
     @property
@@ -214,6 +260,8 @@ class Container:
         if self.runtime == "function":
             if experimental := dict(self.spec.get("experimental", {})):
                 kwargs["experimental_options"] = experimental
+        if volumes := self.volumes:
+            kwargs["volumes"] = volumes
         return kwargs
 
     @property
@@ -243,6 +291,8 @@ class Container:
             kwargs["memory"] = int(r["memory"])
         if opts := self.experimental_options:
             kwargs["experimental_options"] = dict(opts)
+        if volumes := self.volumes:
+            kwargs["volumes"] = volumes
         return kwargs
 
     def shell_command(self, override: str = "") -> str:

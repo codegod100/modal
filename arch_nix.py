@@ -47,6 +47,14 @@ def _nix_conf(*extra_substituters):
         # root in a container: no daemon, no nixbld group, no sandbox
         "build-users-group =",
         "sandbox = false",
+        # Nix's own default is max-jobs = 1, which builds the whole graph end
+        # to end on one core while the rest of the box idles. A tail of small
+        # derivations -- a thousand crate unpacks, say -- pays that serially.
+        # `auto` is one job per core; `cores = 0` then lets each job use every
+        # core it can, which oversubscribes on purpose: the cheap derivations
+        # that make up the tail never come close to saturating a core each.
+        "max-jobs = auto",
+        "cores = 0",
         "substituters = " + " ".join([*extra_substituters, *SUBSTITUTERS]),
         "trusted-public-keys = " + " ".join(TRUSTED_KEYS),
         # The volume holds locally-built paths that carry no signature.
