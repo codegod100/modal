@@ -7,10 +7,10 @@
 ;; nix at run time. Nothing is substituted at build time, so the image builds
 ;; in seconds and a container starts straight into the command.
 ;;
-;; Containers run under gVisor. That is not a choice -- the server refuses any
-;; other runtime ("MODAL_FUNCTION_RUNTIME must be set to 'gvisor'"), and
-;; vm_runtime is rejected outright as an unknown experimental option. See
-;; ../README.md.
+;; --sandbox makes it a Sandbox rather than a Function. A Sandbox runs on a
+;; real VM, dies when its command does, and can be dropped into; a Function is
+;; gVisor-only and Modal manages its lifetime. For a build that runs and then
+;; exits, --sandbox is the one you want. See ../README.md.
 ;;
 ;; --flake adds a devShell. It is a different tradeoff on purpose: the build
 ;; then has to substitute the shell's whole closure, and every start pays a
@@ -28,8 +28,10 @@
   (System/exit 1))
 
 (def help
-  (str "usage: scripts/new-container NAME [--flake] [--base IMAGE]\n"
+  (str "usage: scripts/new-container NAME [--sandbox] [--flake] [--base IMAGE]\n"
        "\n"
+       "  --sandbox      a Sandbox on a real VM instead of a gVisor Function:\n"
+       "                 runs its command as its own process and dies with it\n"
        "  --flake        add flake.nix and run the command inside `nix develop`.\n"
        "                 Implies the ptyshim under gVisor, and a slower build.\n"
        "  --base IMAGE   published Modal image to build on (default: arch-nix)\n"
@@ -41,6 +43,7 @@
       (nil? a)             opts
       (#{"-h" "--help"} a) (assoc opts :help true)
       (= a "--flake")      (recur more (assoc opts :flake true))
+      (= a "--sandbox")    (recur more (assoc opts :runtime "sandbox"))
       (= a "--force")      (recur more (assoc opts :force true))
       (= a "--base")       (if-let [v (first more)]
                              (recur (rest more) (assoc opts :base v))
@@ -54,11 +57,18 @@
 
 ;; -- templates -------------------------------------------------------------
 
-(defn- container-toml [{:keys [name base flake]}]
+(defn- container-toml [{:keys [name base flake runtime]}]
   (str "[container]\n"
        "name        = \"" name "\"\n"
        "description = \"\"\n"
        "base        = \"" base "\"\n"
+       (if (= runtime "sandbox")
+         (str "# A Sandbox, not a Function: runs on a real VM, and the command is\n"
+              "# the sandbox's own process so it dies when the command does.\n"
+              "runtime     = \"sandbox\"\n")
+         (str "# A Function: Modal imports this module in the container and calls\n"
+              "# it. gVisor only. Use runtime = \"sandbox\" for a real VM.\n"
+              "runtime     = \"function\"\n"))
        "\n"
        "[build]\n"
        "include = [\".\"]\n"
@@ -82,9 +92,13 @@
               "flake = false\n"
               "shim  = false\n"))
        "\n"
-       "# [experimental] is passed verbatim to @app.function(experimental_options=).\n"
-       "# The server validates the keys and rejects unknown ones, so do not guess:\n"
-       "# vm_runtime, for one, is refused. Containers run under gVisor either way.\n"))
+       (if (= runtime "sandbox")
+         (str "# [experimental] overrides the sandbox default of vm_runtime = true.\n"
+              "# Setting it here turns that default off, so leave it alone unless you\n"
+              "# want gVisor.\n")
+         (str "# [experimental] is passed verbatim to experimental_options. The server\n"
+              "# validates the keys, so do not guess -- vm_runtime in particular is\n"
+              "# refused on a Function; it is Sandbox-only.\n"))))
 
 (def container-py
   (str "\"\"\"Generated stub -- the container is defined by container.toml.\n"
@@ -153,7 +167,7 @@
        "    };\n"
        "}\n"))
 
-(defn- readme [{:keys [name base flake]}]
+(defn- readme [{:keys [name base flake runtime]}]
   (str "# `" name "`\n"
        "\n"
        "    scripts/deploy " name "\n"
@@ -162,10 +176,15 @@
        "Defined by `container.toml`; see `../spec.md` for the keys.\n"
        "Built on the published `" base "` image.\n"
        "\n"
-       "Runs under gVisor. The workspace permits nothing else -- the server\n"
-       "refuses `MODAL_FUNCTION_RUNTIME=runc` and rejects `vm_runtime` as an\n"
-       "unknown experimental option -- so the ptyshim is permanent, not a\n"
-       "stopgap. See ../../README.md.\n"
+       (if (= runtime "sandbox")
+         (str "Runs as a Sandbox on a real VM (kernel 6.x, not gVisor). The command\n"
+              "is the sandbox's own process, so it dies when the command exits --\n"
+              "no idle window and nothing to tear down. Note the VM restrictions:\n"
+              "no GPU, and memory is exactly what `[resources] memory` asks for.\n")
+         (str "Runs as a Function under gVisor. Functions cannot have a VM -- the\n"
+              "server refuses `MODAL_FUNCTION_RUNTIME=runc` and rejects `vm_runtime`\n"
+              "as an unknown experimental option -- so nix needs the ptyshim here.\n"
+              "Use `runtime = \"sandbox\"` if you want the VM. See ../../README.md.\n"))
        "\n"
        (if flake
          (str "`flake.nix` provides the devShell the command runs inside. The build\n"
