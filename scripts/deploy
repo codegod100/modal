@@ -1,0 +1,91 @@
+#!/usr/bin/env jolt
+;; Deploy a container from containers/<name>/ to Modal.
+;;
+;;   scripts/deploy NAME              build + run once, print the output
+;;   scripts/deploy NAME --deploy     publish the app instead of running it
+;;   scripts/deploy NAME -- CMD...    override [run] command for this run
+;;   scripts/deploy --list            list the containers in this repo
+;;
+;; Everything about the container comes from its container.toml. This script
+;; only checks the pieces are in place and hands the work to `modal`.
+
+(require '[babashka.process :as p]
+         '[clojure.string :as str])
+
+(def repo
+  (-> *file* java.io.File. .getAbsoluteFile .getParentFile .getParentFile .getPath))
+
+(def containers-dir (str repo "/containers"))
+
+(defn- die [& msg]
+  (binding [*out* *err*]
+    (println (str/join " " (cons "deploy:" msg))))
+  (System/exit 1))
+
+(defn- containers []
+  (->> (.listFiles (java.io.File. containers-dir))
+       (filter #(.exists (java.io.File. % "container.toml")))
+       (map #(.getName %))
+       sort))
+
+(def help
+  (str "usage: scripts/deploy NAME [--deploy] [--rebuild-base] [-- COMMAND...]\n"
+       "       scripts/deploy --list\n"
+       "\n"
+       "  --deploy         `modal deploy` instead of running once\n"
+       "  --rebuild-base   run arch_nix.py first, republishing arch-nix\n"
+       "  -- COMMAND...    override the container.toml [run] command\n"))
+
+(defn- parse-args [args]
+  (loop [[a & more] args, opts {}]
+    (cond
+      (nil? a)               opts
+      (= a "--")             (assoc opts :command (str/join " " more))
+      (#{"-h" "--help"} a)   (assoc opts :help true)
+      (= a "--list")         (assoc opts :list true)
+      (= a "--deploy")       (recur more (assoc opts :deploy true))
+      (= a "--rebuild-base") (recur more (assoc opts :rebuild-base true))
+      (str/starts-with? a "-") (die "unknown option" (pr-str a) "-- try --help")
+      (:name opts)           (die "give exactly one name")
+      :else                  (recur more (assoc opts :name a)))))
+
+(defn- run! [argv]
+  (println (str "$ " (str/join " " argv)))
+  (let [{:keys [exit]} (apply p/shell {:dir repo :continue true} argv)]
+    (when-not (zero? exit)
+      (die (first argv) "exited" exit))))
+
+(defn- have? [cmd]
+  (zero? (:exit (p/shell {:out :string :err :string :continue true}
+                         "sh" "-c" (str "command -v " cmd)))))
+
+(defn -main [& args]
+  (let [{:keys [name command deploy rebuild-base] :as opts} (parse-args args)]
+    (when (:help opts) (print help) (System/exit 0))
+    (when (:list opts)
+      (doseq [c (containers)] (println c))
+      (System/exit 0))
+    (when-not name
+      (print help)
+      (println "\ncontainers:" (str/join ", " (containers)))
+      (System/exit 1))
+
+    (let [entry (str containers-dir "/" name "/container.py")]
+      (when-not (.exists (java.io.File. ^String entry))
+        (die "no such container:" name "-- have:" (str/join ", " (containers))))
+      (when-not (have? "modal")
+        (die "modal is not on PATH -- pip install modal && modal setup"))
+
+      ;; The base image carries the nix configuration, so it has to exist
+      ;; before anything can be built on top of it.
+      (when rebuild-base
+        (run! ["modal" "run" (str repo "/arch_nix.py")]))
+
+      (if deploy
+        (run! ["modal" "deploy" entry])
+        (run! (cond-> ["modal" "run" entry]
+                command (conj "--command" command))))
+
+      (println (if deploy "deployed" "done")))))
+
+(apply -main *command-line-args*)

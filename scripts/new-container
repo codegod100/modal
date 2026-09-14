@@ -1,0 +1,219 @@
+#!/usr/bin/env jolt
+;; Generate a baseline container under containers/<name>/.
+;;
+;;   scripts/new-container NAME [options]
+;;
+;; The baseline is tuned for fast boot: the published arch-nix image, a real
+;; VM instead of gVisor, and no nix at run time. Nothing is substituted at
+;; build time, so the image builds in seconds and a container starts straight
+;; into the command.
+;;
+;; --flake adds a devShell. It is a different tradeoff on purpose: the build
+;; then has to substitute the shell's whole closure, and every start pays a
+;; `nix develop` evaluation. Use it when you want the tools, not by default.
+
+(require '[babashka.process :as p]
+         '[clojure.string :as str])
+
+(def repo
+  (-> *file* java.io.File. .getAbsoluteFile .getParentFile .getParentFile .getPath))
+
+(defn- die [& msg]
+  (binding [*out* *err*]
+    (println (str/join " " (cons "new-container:" msg))))
+  (System/exit 1))
+
+(def help
+  (str "usage: scripts/new-container NAME [--flake] [--gvisor] [--base IMAGE]\n"
+       "\n"
+       "  --flake        add flake.nix and run the command inside `nix develop`.\n"
+       "                 Implies the ptyshim under gVisor, and a slower build.\n"
+       "  --gvisor       do not ask for a real VM (drops [experimental] vm_runtime)\n"
+       "  --base IMAGE   published Modal image to build on (default: arch-nix)\n"
+       "  --force        overwrite an existing containers/NAME\n"))
+
+(defn- parse-args [args]
+  (loop [[a & more] args, opts {:base "arch-nix" :vm true}]
+    (cond
+      (nil? a)             opts
+      (#{"-h" "--help"} a) (assoc opts :help true)
+      (= a "--flake")      (recur more (assoc opts :flake true))
+      (= a "--gvisor")     (recur more (assoc opts :vm false))
+      (= a "--force")      (recur more (assoc opts :force true))
+      (= a "--base")       (if-let [v (first more)]
+                             (recur (rest more) (assoc opts :base v))
+                             (die "--base needs a value"))
+      (str/starts-with? a "-") (die "unknown option" (pr-str a) "-- try --help")
+      (:name opts)         (die "give exactly one name")
+      :else                (recur more (assoc opts :name a)))))
+
+(defn- valid-name? [n]
+  (boolean (re-matches #"[a-z][a-z0-9-]*" n)))
+
+;; -- templates -------------------------------------------------------------
+
+(defn- container-toml [{:keys [name base flake vm]}]
+  (str "[container]\n"
+       "name        = \"" name "\"\n"
+       "description = \"\"\n"
+       "base        = \"" base "\"\n"
+       "\n"
+       "[build]\n"
+       "include = [\".\"]\n"
+       "\n"
+       "[resources]\n"
+       "timeout = 900\n"
+       "\n"
+       "[run]\n"
+       "workdir = \"/app\"\n"
+       "command = \"python3 main.py\"\n"
+       "env     = { GREETING = \"hello from " name "\" }\n"
+       "\n"
+       "[nix]\n"
+       (if flake
+         (str "# The devShell is warmed at build time so its store paths bake in.\n"
+              "# That build substitutes the whole closure, so it is not quick.\n"
+              "flake = true\n"
+              "shim  = true\n")
+         (str "# Off by default: nothing to substitute at build time, nothing to\n"
+              "# evaluate at start. Turn both on together if you add a flake.nix.\n"
+              "flake = false\n"
+              "shim  = false\n"))
+       "\n"
+       "[experimental]\n"
+       (if vm
+         (str "# Run on a real VM rather than gVisor. Unvalidated by the client:\n"
+              "# an unrecognised key here is ignored rather than refused.\n"
+              "vm_runtime = true\n")
+         "# vm_runtime = true\n")))
+
+(def container-py
+  (str "\"\"\"Generated stub -- the container is defined by container.toml.\n"
+       "\n"
+       "Edit container.toml, not this file.\n"
+       "\"\"\"\n"
+       "\n"
+       "import os\n"
+       "import sys\n"
+       "\n"
+       "sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))\n"
+       "\n"
+       "from _loader import Container  # noqa: E402\n"
+       "\n"
+       "c = Container.from_toml(__file__)\n"
+       "image, app = c.image, c.app\n"
+       "\n"
+       "\n"
+       "@app.function(**c.function_kwargs)\n"
+       "def run(command: str = \"\") -> str:\n"
+       "    return c.execute(command)\n"
+       "\n"
+       "\n"
+       "@app.local_entrypoint()\n"
+       "def main(command: str = \"\"):\n"
+       "    print(run.remote(command), end=\"\")\n"))
+
+(def main-py
+  (str "#!/usr/bin/env python3\n"
+       "\"\"\"The app. Replace this with something that earns its container.\"\"\"\n"
+       "\n"
+       "import os\n"
+       "import platform\n"
+       "\n"
+       "\n"
+       "def main():\n"
+       "    print(os.environ.get(\"GREETING\", \"hello\"))\n"
+       "    print(f\"python   {platform.python_version()}\")\n"
+       "    print(f\"host     {platform.node()} ({platform.machine()})\")\n"
+       "\n"
+       "\n"
+       "if __name__ == \"__main__\":\n"
+       "    main()\n"))
+
+(defn- flake-nix [{:keys [name]}]
+  (str "{\n"
+       "  description = \"" name " devShell\";\n"
+       "\n"
+       "  inputs.nixpkgs.url = \"github:NixOS/nixpkgs/nixos-unstable\";\n"
+       "\n"
+       "  outputs = { self, nixpkgs }:\n"
+       "    let\n"
+       "      systems = [ \"x86_64-linux\" \"aarch64-linux\" ];\n"
+       "      forAll = f: nixpkgs.lib.genAttrs systems\n"
+       "        (system: f nixpkgs.legacyPackages.${system});\n"
+       "    in\n"
+       "    {\n"
+       "      devShells = forAll (pkgs: {\n"
+       "        default = pkgs.mkShell {\n"
+       "          # Every path here is substituted into the image before the\n"
+       "          # shell can be entered, so keep it short. `git` is 404MB\n"
+       "          # and `python3` 220MB; arch-nix already has both.\n"
+       "          packages = with pkgs; [ jq ripgrep ];\n"
+       "        };\n"
+       "      });\n"
+       "    };\n"
+       "}\n"))
+
+(defn- readme [{:keys [name base flake vm]}]
+  (str "# `" name "`\n"
+       "\n"
+       "    scripts/deploy " name "\n"
+       "    modal run containers/" name "/container.py\n"
+       "\n"
+       "Defined by `container.toml`; see `../spec.md` for the keys.\n"
+       "Built on the published `" base "` image.\n"
+       "\n"
+       (if vm
+         (str "Asks for a real VM (`[experimental] vm_runtime`) rather than gVisor.\n"
+              "The client does not validate that key, so if the workspace does not\n"
+              "offer it the request is ignored rather than refused -- the way to\n"
+              "tell is behavioural, not from the logs.\n")
+         "Runs under gVisor, Modal's default.\n")
+       "\n"
+       (if flake
+         (str "`flake.nix` provides the devShell the command runs inside. The build\n"
+              "warms it once so the store paths bake into the image; that substitution\n"
+              "is the slow part of the build, and every start still pays a `nix\n"
+              "develop` evaluation.\n")
+         (str "No nix at run time: nothing is substituted at build time and nothing\n"
+              "is evaluated at start. Add a `flake.nix` and set `[nix] flake`/`shim`\n"
+              "together if you want a devShell, knowing what it costs.\n"))))
+
+;; -- main ------------------------------------------------------------------
+
+(defn- write! [path content]
+  (spit path content)
+  (println "  " (str/replace path (str repo "/") "")))
+
+(defn -main [& args]
+  (let [{:keys [name flake force] :as opts} (parse-args args)]
+    (when (:help opts) (print help) (System/exit 0))
+    (when-not name (print help) (System/exit 1))
+    (when-not (valid-name? name)
+      (die "name must be lowercase letters, digits and dashes:" (pr-str name)))
+
+    (let [dir (str repo "/containers/" name)
+          f   (java.io.File. dir)]
+      (when (and (.exists f) (not force))
+        (die "containers/" (str name " already exists -- pass --force")))
+      (.mkdirs f)
+
+      (println (str "containers/" name ":"))
+      (write! (str dir "/container.toml") (container-toml opts))
+      (write! (str dir "/container.py")   container-py)
+      (write! (str dir "/main.py")        main-py)
+      (write! (str dir "/README.md")      (readme opts))
+      (when flake
+        (write! (str dir "/flake.nix") (flake-nix opts))
+        ;; nix refuses to look at a flake git does not know about.
+        (p/shell {:dir repo :continue true}
+                 "git" "add" (str "containers/" name "/flake.nix"))
+        (println "   (running nix flake lock)")
+        (p/shell {:dir dir :continue true} "nix" "flake" "lock"))
+
+      (println)
+      (println "next:")
+      (println (str "  edit containers/" name "/main.py"))
+      (println (str "  scripts/deploy " name)))))
+
+(apply -main *command-line-args*)

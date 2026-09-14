@@ -11,9 +11,10 @@
     {
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
-          # Kept small on purpose. Every path here has to be substituted into
-          # the Modal image before the shell can be entered, and the image
-          # cannot *build* anything -- see ../../README.md.
+          # All of these are binary-cached, so adding one costs a download
+          # once and nothing thereafter -- provided the warm layer is not
+          # invalidated. See _loader.py for why it is copied in before the
+          # source is.
           packages = with pkgs; [
             hello
             jq

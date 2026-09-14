@@ -11,8 +11,8 @@ import platform
 import shutil
 import sys
 
-# The tools examples/hello/flake.nix puts on PATH. Reported, not required:
-# the app runs fine without them, it just says so.
+# The tools flake.nix puts on PATH, plus two the base image provides. Which
+# came from where is the interesting part, so both are reported.
 DEVSHELL_TOOLS = ["hello", "jq", "rg", "git", "python3"]
 
 
