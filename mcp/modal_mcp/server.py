@@ -120,17 +120,36 @@ async def _json_response(send, status: int, body: dict, extra_headers=None):
 
 
 def build_asgi_app():
-    """ASGI app for remote (HTTP) serving. Requires MCP_AUTH_TOKEN."""
+    """ASGI app for remote (HTTP) serving.
+
+    These tools can run arbitrary code in the workspace (create_sandbox +
+    sandbox_exec) and spend money, so the endpoint is never served open. One of
+    two guards must be in place:
+
+    * ``MODAL_MCP_TRUST_PROXY_AUTH=1`` -- something in front already
+      authenticates. On Modal that is ``requires_proxy_auth=True``, which
+      rejects unauthorized requests at the edge, so they never even start a
+      container. ``deploy.py`` sets both together.
+    * ``MCP_AUTH_TOKEN`` -- a bearer token this app checks itself, for hosting
+      where no such proxy exists.
+    """
     token = os.environ.get("MCP_AUTH_TOKEN", "")
-    if len(token) < 16:
+    trust_proxy = os.environ.get("MODAL_MCP_TRUST_PROXY_AUTH", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if not trust_proxy and len(token) < 16:
         raise RuntimeError(
-            "MCP_AUTH_TOKEN must be set to a secret of at least 16 characters. "
-            "The MCP endpoint is publicly reachable, so it is never served unauthenticated."
+            "Refusing to serve an unauthenticated MCP endpoint. Either deploy behind "
+            "Modal proxy auth (requires_proxy_auth=True, plus "
+            "MODAL_MCP_TRUST_PROXY_AUTH=1), or set MCP_AUTH_TOKEN to a secret of at "
+            "least 16 characters."
         )
     mcp = build_mcp()
     # Modal autoscales across containers, so HTTP sessions must not be sticky.
     app = mcp.http_app(path="/mcp", stateless_http=True, json_response=True)
-    return BearerAuth(app, token)
+    return BearerAuth(app, token) if token else app
 
 
 def main() -> None:
