@@ -44,6 +44,20 @@ class Container:
         self.command = run.get("command", "")
         self.env = dict(run.get("env", {}))
 
+        # Substituters reach nix through NIX_CONFIG rather than nix.conf, and
+        # at run time rather than build time. Written into the image's nix.conf
+        # instead, nix touches the path while the image is being built and
+        # creates it -- and Modal will not mount a volume over a non-empty
+        # directory, so the container that wanted the cache cannot start. As
+        # env it covers every nix command that runs in the container, the ones
+        # typed by hand in a shell included, and leaves the mount point empty.
+        if subs := list(spec.get("nix", {}).get("substituters", [])):
+            line = "extra-substituters = " + " ".join(subs)
+            self.env["NIX_CONFIG"] = (
+                f"{self.env['NIX_CONFIG']}\n{line}" if "NIX_CONFIG" in self.env
+                else line
+            )
+
         # "function" (the default) or "sandbox". Sandboxes can run on a real
         # VM, which Functions cannot -- see ../README.md.
         self.runtime = spec.get("container", {}).get("runtime", "function")
@@ -162,12 +176,23 @@ class Container:
     def _build_image(self) -> modal.Image:
         c = self.spec["container"]
         build = self.spec.get("build", {})
-        nix_spec = self.spec.get("nix", {})
 
         if c.get("base"):
             image = modal.Image.from_name(c["base"])
         else:
             image = modal.Image.from_registry(c["registry"])
+
+        # `nix profile install` puts things in ~/.nix-profile/bin, which is on
+        # nobody's PATH here -- so the install succeeds and the very next line
+        # says `command not found`. Set on the image rather than in a .bashrc,
+        # because a container's command runs under `sh -c` and reads neither.
+        # Spelled out rather than prefixed onto $PATH: an image env is a value,
+        # not a shell expression, so "$PATH" here would be four literal
+        # characters.
+        image = image.env({
+            "PATH": "/root/.nix-profile/bin:/usr/local/sbin:/usr/local/bin"
+                    ":/usr/sbin:/usr/bin:/sbin:/bin",
+        })
 
         if self.use_shim:
             image = image.add_local_file(
@@ -216,16 +241,6 @@ class Container:
             else:
                 image = image.add_local_file(src, dest, copy=True)
 
-        # Substituters for every nix command in the container, typed by hand or
-        # not. Without this the only things reading a mounted cache are the
-        # scripts that pass --extra-substituters, so an interactive shell
-        # rebuilds from source what the volume beside it already holds.
-        if subs := list(nix_spec.get("substituters", [])):
-            image = image.run_commands(
-                f"echo 'extra-substituters = {' '.join(subs)}'"
-                " >> /etc/nix/nix.conf"
-            )
-
         # A repo copied in brings its `.git` along, and in a worktree that is a
         # *file* holding `gitdir: <path on the machine that copied it>`. Nix
         # believes it and goes looking for a checkout that is not there --
@@ -234,7 +249,14 @@ class Container:
         image = image.run_commands(f"rm -rf {self.workdir}/.git")
 
         if commands := build.get("commands", []):
-            image = image.run_commands(*commands)
+            # Volumes mounted for the build too, not just the run. A build step
+            # that wants nix to *build* something is the one thing gVisor will
+            # not do -- image builds are Functions underneath, and a derivation
+            # there dies on `unexpected EOF reading a line`. Substituting is
+            # fine, so a step that can reach the cache never has to build, and
+            # the shim stays retired. The mount is not part of the resulting
+            # image; only what the step writes outside it is.
+            image = image.run_commands(*commands, volumes=self.volumes)
 
         # container.py does `from _loader import Container`, and Modal mounts
         # the entrypoint file alone -- so without this the import that works
