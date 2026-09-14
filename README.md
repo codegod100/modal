@@ -109,7 +109,15 @@ would be the way to escape it, at the cost of no GPUs, static memory, and a
 
     scripts/new-container NAME      # scaffold a new one
     scripts/deploy NAME             # build + run it once
+    scripts/deploy NAME -c 'CMD'    # override [run] command for one run
     scripts/deploy --list           # what is here
+
+Both resolve the repo through their own symlink, so they can live on PATH:
+
+    ln -s "$PWD/scripts/new-container" ~/.local/bin/new-container
+    ln -s "$PWD/scripts/deploy"        ~/.local/bin/modal-deploy
+
+`.claude/skills/modal-containers/` documents the whole workflow for Claude.
 
 Each container is a directory holding a `container.toml`, and that file is the
 whole definition -- base image, resources, what to run, whether there is a nix
