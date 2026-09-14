@@ -88,6 +88,36 @@ most uses only need substitution.
   2.35.2. Installing 2.24/2.28 from the Arch archive failed on
   `libboost_context` and `liblowdown` version pins.
 
+## `examples/hello` -- an app in a devShell, on Modal
+
+    scripts/deploy-hello                    # build + run once, print the output
+    scripts/deploy-hello --who "my laptop"  # pass a greeting through
+    scripts/deploy-hello --deploy           # publish the app instead
+    scripts/deploy-hello --rebuild-base     # republish arch-nix first
+
+`scripts/deploy-hello` is a jolt script; it only checks that `modal` is around
+and that the base image exists, then shells out to `modal`.
+
+The container is **built on the published `arch-nix` image** -- nix,
+substituters and trusted keys already configured there, nothing re-derived.
+`examples/hello/modal_app.py` adds three layers on top: this directory, a
+`ptyshim.so` compiled from `ptyshim.c`, and one `nix develop --command true`
+that warms the devShell so its store paths bake in. The shim is what makes that
+last step possible at all; without it the `nix-shell-env` derivation hits the
+gVisor pty bug above.
+
+`examples/hello/flake.nix` is a plain `mkShell` with `hello`, `jq`, `ripgrep`,
+`git` and `python3` on PATH, and `HELLO_WHO` set. `hello.py` prints where each
+of those resolved, so the same command distinguishes the three places it runs:
+
+    hello from the devShell
+    python   3.14.7 at /nix/store/d64q19q1…-python3-3.14.7/bin/python3
+    host     modal (x86_64)
+    devshell impure
+      hello    /nix/store/xl1h9i29…-hello-2.12.3/bin/hello
+
+Verified end to end: 3003 store paths after warming, app output as above.
+
 ## Other notes
 
 * `add_python=` cannot overlay `/usr/local` on `archlinux:base-devel` -- the
