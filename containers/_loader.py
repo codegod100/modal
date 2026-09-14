@@ -257,17 +257,6 @@ class Container:
             )
         return f"cd {self.workdir} && {command}"
 
-    def launch(self, function, override: str = "") -> str:
-        """Run the container's command, whichever runtime the spec asked for.
-
-        Functions and Sandboxes are genuinely different things -- one calls
-        your code, the other rents you a machine -- so this is a dispatch, not
-        an abstraction over them.
-        """
-        if self.runtime == "function":
-            return function.remote(override)
-        return self.run_sandbox(override)
-
     def run_sandbox(self, override: str = "") -> str:
         """Run one command in a Sandbox that dies when the command does.
 

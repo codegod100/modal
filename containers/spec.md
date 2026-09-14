@@ -2,8 +2,14 @@
 
 Every directory under `containers/` is one container, and it is defined by a
 `container.toml`. `containers/_loader.py` reads that file and produces the
-`modal.Image` and the `modal.App`; `container.py` is a fixed four-line stub
-that wires the two together. Nothing else is hand-written per container.
+`modal.Image` and the `modal.App`; `container.py` is a generated stub that
+wires the two together. Nothing else is hand-written per container.
+
+There are two stub shapes, one per runtime. A function container registers an
+`@app.function` and calls it; a sandbox container registers none at all --
+nothing of your module is imported into a Sandbox, so a Function there would
+be dead weight, and its kwargs are exactly where `vm_runtime` would be wrongly
+applied.
 
 Create one with `scripts/new-container <name>`, deploy it with
 `scripts/deploy <name>`.
@@ -16,7 +22,10 @@ Only `[container] name` is required. Everything below shows its default.
 [container]
 name        = "hello"          # required; the Modal App name
 description = ""               # shown in the generated README and --help
-runtime     = "function"       # "function" (default) or "sandbox"
+runtime     = "function"       # "function" (the loader default) or "sandbox".
+                               # scripts/new-container defaults to "sandbox"
+                               # and always writes this key explicitly, so the
+                               # loader default rarely applies.
 
 # Exactly one of `base` (a published Modal image, from `.publish()`) or
 # `registry` (a Docker registry reference). `base` is the usual one here.

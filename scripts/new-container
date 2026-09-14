@@ -7,10 +7,14 @@
 ;; nix at run time. Nothing is substituted at build time, so the image builds
 ;; in seconds and a container starts straight into the command.
 ;;
-;; --sandbox makes it a Sandbox rather than a Function. A Sandbox runs on a
-;; real VM, dies when its command does, and can be dropped into; a Function is
-;; gVisor-only and Modal manages its lifetime. For a build that runs and then
-;; exits, --sandbox is the one you want. See ../README.md.
+;; Containers are Sandboxes by default: a real VM rather than gVisor, and the
+;; command is the container's own process, so it dies when the command does.
+;; That is the shape a build wants. --function instead registers a Modal
+;; Function -- code Modal imports and calls, gVisor-only, lifetime managed for
+;; you -- which is what you want for something served rather than run once.
+;;
+;; The generated container.toml always states its runtime explicitly, so the
+;; loader's own default never comes into it. See ../README.md.
 ;;
 ;; --flake adds a devShell. It is a different tradeoff on purpose: the build
 ;; then has to substitute the shell's whole closure, and every start pays a
@@ -28,22 +32,25 @@
   (System/exit 1))
 
 (def help
-  (str "usage: scripts/new-container NAME [--sandbox] [--flake] [--base IMAGE]\n"
+  (str "usage: scripts/new-container NAME [--function] [--flake] [--base IMAGE]\n"
        "\n"
-       "  --sandbox      a Sandbox on a real VM instead of a gVisor Function:\n"
-       "                 runs its command as its own process and dies with it\n"
+       "  (default)      a Sandbox on a real VM: runs its command as its own\n"
+       "                 process and dies with it\n"
+       "  --function     a Modal Function instead -- gVisor only, lifetime\n"
+       "                 managed by Modal. For served code, not one-shot runs.\n"
        "  --flake        add flake.nix and run the command inside `nix develop`.\n"
        "                 Implies the ptyshim under gVisor, and a slower build.\n"
        "  --base IMAGE   published Modal image to build on (default: arch-nix)\n"
        "  --force        overwrite an existing containers/NAME\n"))
 
 (defn- parse-args [args]
-  (loop [[a & more] args, opts {:base "arch-nix" :vm true}]
+  (loop [[a & more] args, opts {:base "arch-nix" :runtime "sandbox"}]
     (cond
       (nil? a)             opts
       (#{"-h" "--help"} a) (assoc opts :help true)
       (= a "--flake")      (recur more (assoc opts :flake true))
       (= a "--sandbox")    (recur more (assoc opts :runtime "sandbox"))
+      (= a "--function")   (recur more (assoc opts :runtime "function"))
       (= a "--force")      (recur more (assoc opts :force true))
       (= a "--base")       (if-let [v (first more)]
                              (recur (rest more) (assoc opts :base v))
@@ -100,8 +107,34 @@
               "# validates the keys, so do not guess -- vm_runtime in particular is\n"
               "# refused on a Function; it is Sandbox-only.\n"))))
 
-(def container-py
-  (str "\"\"\"Generated stub -- the container is defined by container.toml.\n"
+(def sandbox-py
+  (str
+       "\"\"\"Generated stub -- the container is defined by container.toml.\n"
+       "\n"
+       "Edit container.toml, not this file.\n"
+       "\"\"\"\n"
+       "\n"
+       "import os\n"
+       "import sys\n"
+       "\n"
+       "sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))\n"
+       "\n"
+       "from _loader import Container  # noqa: E402\n"
+       "\n"
+       "c = Container.from_toml(__file__)\n"
+       "image, app = c.image, c.app\n"
+       "\n"
+       "\n"
+       "# No @app.function here: a Sandbox runs its command as its own process and\n"
+       "# nothing of this module is imported into it. Registering a Function would be\n"
+       "# dead weight, and its kwargs are where vm_runtime would be wrongly applied.\n"
+       "@app.local_entrypoint()\n"
+       "def main(command: str = \"\"):\n"
+       "    c.run_sandbox(command)\n"))
+
+(def function-py
+  (str
+       "\"\"\"Generated stub -- the container is defined by container.toml.\n"
        "\n"
        "Edit container.toml, not this file.\n"
        "\"\"\"\n"
@@ -124,7 +157,10 @@
        "\n"
        "@app.local_entrypoint()\n"
        "def main(command: str = \"\"):\n"
-       "    print(c.launch(run, command), end=\"\")\n"))
+       "    print(run.remote(command), end=\"\")\n"))
+
+(defn- container-py [runtime]
+  (if (= runtime "sandbox") sandbox-py function-py))
 
 (def main-py
   (str "#!/usr/bin/env python3\n"
@@ -216,7 +252,7 @@
 
       (println (str "containers/" name ":"))
       (write! (str dir "/container.toml") (container-toml opts))
-      (write! (str dir "/container.py")   container-py)
+      (write! (str dir "/container.py")   (container-py (:runtime opts)))
       (write! (str dir "/main.py")        main-py)
       (write! (str dir "/README.md")      (readme opts))
       (when flake

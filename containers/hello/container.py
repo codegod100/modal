@@ -14,11 +14,9 @@ c = Container.from_toml(__file__)
 image, app = c.image, c.app
 
 
-@app.function(**c.function_kwargs)
-def run(command: str = "") -> str:
-    return c.execute(command)
-
-
+# No @app.function here: a Sandbox runs its command as its own process and
+# nothing of this module is imported into it. Registering a Function would be
+# dead weight, and its kwargs are where vm_runtime would be wrongly applied.
 @app.local_entrypoint()
 def main(command: str = ""):
-    print(c.launch(run, command), end="")
+    c.run_sandbox(command)
