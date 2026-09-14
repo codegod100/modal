@@ -34,6 +34,12 @@ TRUSTED_KEYS = [
 nix_cache = modal.Volume.from_name("nix-cache", create_if_missing=True)
 CACHE_MOUNT = "/nix-cache"
 
+# Store paths to bake into the image from that cache, as `nix copy` arguments.
+# Empty by default, and deliberately: `nix copy --all` will happily pull every
+# path the cache has ever held -- 1718 paths and a gigabyte of someone else's
+# rustc, in the case this was first written against. Name what you need.
+CACHE_PATHS: list[str] = []
+
 
 def _nix_conf(*extra_substituters):
     return "\n".join([
@@ -61,12 +67,12 @@ image = (
         # During the build the volume is available, so prefer it.
         f"cat > /etc/nix/nix.conf <<'EOF'\n{_nix_conf('file://' + CACHE_MOUNT)}EOF",
     )
-    # Pull whatever the cache already holds into the image's own store.
+    # Bake the named paths out of the cache and into the image's own store.
     .run_commands(
-        f"test -f {CACHE_MOUNT}/nix-cache-info"
-        f" && nix copy --all --no-check-sigs --from file://{CACHE_MOUNT}"
-        f" || echo 'nix-cache volume is empty, skipping'",
-        "nix path-info --all | wc -l",
+        f"test -f {CACHE_MOUNT}/nix-cache-info && test -n '{' '.join(CACHE_PATHS)}'"
+        f" && nix copy --no-check-sigs --from file://{CACHE_MOUNT} {' '.join(CACHE_PATHS)}"
+        f" || echo 'nothing to bake from nix-cache'",
+        'echo "store paths in image: $(nix path-info --all | wc -l)"',
         volumes={CACHE_MOUNT: nix_cache},
     )
     # The volume is gone at run time; drop it from the substituter list so

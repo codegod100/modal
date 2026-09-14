@@ -13,11 +13,17 @@ import modal
 image = modal.Image.from_name("arch-nix")
 ```
 
-Substituters and trusted keys are at the top of the file. A `nix-cache` Modal
-Volume, if you have one, is mounted **during the image build only** and its
-store paths are copied in. That is the useful half of a nix cache on Modal: a
-volume mount is not part of the resulting image, but filesystem changes outside
-it are, so `/nix/store` keeps what was copied while `/nix-cache` disappears.
+Substituters and trusted keys are at the top of the file, along with
+`CACHE_PATHS` -- store paths to bake in from a `nix-cache` Modal Volume. The
+Volume is mounted **during the image build only**. That is the useful half of
+a nix cache here: a volume mount is not part of the resulting image, but
+filesystem changes outside it are, so `/nix/store` keeps what was copied while
+`/nix-cache` disappears.
+
+`CACHE_PATHS` is empty by default. `nix copy --all` works and was how this was
+first proven -- it pulled all 1718 paths in the cache, verified by
+`nix path-info --all` at run time with no volume attached -- but it also baked
+in a gigabyte of unrelated `rustc`. Name what you need instead.
 
 `run_commands` and `run_function` both take `volumes=`, so a build step can
 mount one. Only the final container filesystem is snapshotted.
