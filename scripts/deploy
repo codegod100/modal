@@ -19,7 +19,16 @@
   ;; whatever directory the symlink lives in.
   (-> *file* java.io.File. .getCanonicalFile .getParentFile .getParentFile .getPath))
 
-(def containers-dir (str repo "/containers"))
+;; Both layouts, because a container means two different things depending on
+;; whose repo it is in. Here it is the product and lives in `containers/`; in
+;; a repo that merely builds itself on Modal it is CI config beside the
+;; source it is not part of, and `scripts/new-container` puts it in `.modal/`.
+;; Finding an existing directory is discovery, not guesswork -- a name is
+;; looked up in each and reported from whichever has it.
+(def container-dirs
+  (->> [".modal" "containers"]
+       (map #(str repo "/" %))
+       (filter #(.isDirectory (java.io.File. ^String %)))))
 
 (defn- die [& msg]
   (binding [*out* *err*]
@@ -27,10 +36,20 @@
   (System/exit 1))
 
 (defn- containers []
-  (->> (.listFiles (java.io.File. containers-dir))
+  (->> container-dirs
+       (mapcat #(seq (.listFiles (java.io.File. ^String %))))
        (filter #(.exists (java.io.File. % "container.toml")))
        (map #(.getName %))
+       distinct
        sort))
+
+(defn- entry-for
+  "The container.py for NAME, from whichever directory holds it."
+  [name]
+  (->> container-dirs
+       (map #(str % "/" name "/container.py"))
+       (filter #(.exists (java.io.File. ^String %)))
+       first))
 
 (def help
   (str "usage: scripts/deploy NAME [--deploy] [--rebuild-base] [-c CMD]\n"
@@ -79,8 +98,8 @@
       (println "\ncontainers:" (str/join ", " (containers)))
       (System/exit 1))
 
-    (let [entry (str containers-dir "/" name "/container.py")]
-      (when-not (.exists (java.io.File. ^String entry))
+    (let [entry (entry-for name)]
+      (when-not entry
         (die "no such container:" name "-- have:" (str/join ", " (containers))))
       (when-not (have? "modal")
         (die "modal is not on PATH -- pip install modal && modal setup"))

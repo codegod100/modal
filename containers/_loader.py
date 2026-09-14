@@ -1,6 +1,7 @@
 """Turn a `container.toml` into a `modal.Image` and a `modal.App`.
 
-Every container under `containers/` is a directory with a `container.toml` and
+Every container -- under `containers/` here, `.modal/` in a repo that merely
+builds itself on Modal -- is a directory with a `container.toml` and
 a stub `container.py`. See `spec.md` for the keys; this file is what reads
 them. Nothing here is Modal-specific configuration in its own right -- each
 spec key maps onto a documented Modal argument, and the mapping is meant to

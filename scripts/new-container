@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a baseline container under containers/<name>/.
+"""Generate a baseline container under .modal/<name>/.
 
     scripts/new-container NAME [options]
 
@@ -22,8 +22,14 @@ then has to substitute the shell's whole closure, and every start pays a
 """
 
 import os
+import signal
 import subprocess
 import sys
+
+# Die quietly when the reader goes away, as every other command-line tool
+# does. Without this the flushed prints below raise BrokenPipeError and
+# Python prints a traceback at anyone who pipes this into `head`.
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 # The directory you ran from, not the checkout this script lives in. It is
 # on PATH via a symlink and is meant to scaffold a container into whatever
@@ -40,8 +46,12 @@ HELP = """usage: scripts/new-container NAME [--function] [--flake] [--base IMAGE
   --flake        add flake.nix and run the command inside `nix develop`.
                  Implies the ptyshim under gVisor, and a slower build.
   --base IMAGE   published Modal image to build on (default: arch-nix)
-  --into DIR     scaffold into DIR/containers/ instead of the cwd
-  --force        overwrite an existing containers/NAME
+  --into DIR     scaffold into DIR instead of the cwd
+  --dir NAME     subdirectory to scaffold into (default: .modal). This
+                 repo keeps its own containers in containers/, where they
+                 are the product; elsewhere a container is CI config
+                 sitting beside source it is not part of, so it hides.
+  --force        overwrite an existing <dir>/NAME
 """
 
 
@@ -52,6 +62,7 @@ def die(*msg):
 
 def parse_args(args):
     opts = {"base": "arch-nix", "runtime": "sandbox", "repo": CWD,
+            "dir": ".modal",
             "name": None, "flake": False, "force": False, "help": False}
     args = list(args)
     while args:
@@ -71,6 +82,12 @@ def parse_args(args):
             if not args:
                 die("--base needs a value")
             opts["base"] = args.pop(0)
+        elif a == "--dir":
+            if not args:
+                die("--dir needs a value")
+            opts["dir"] = args.pop(0).strip("/")
+            if not opts["dir"]:
+                die("--dir needs a name, not a slash")
         elif a == "--into":
             if not args:
                 die("--into needs a value")
@@ -244,7 +261,7 @@ def readme(opts):
         f"# `{name}`\n"
         "\n"
         f"    scripts/deploy {name}\n"
-        f"    modal run containers/{name}/container.py\n"
+        f"    modal run {opts['dir']}/{name}/container.py\n"
         "\n"
         "Defined by `container.toml`; see `../spec.md` for the keys.\n"
         f"Built on the published `{base}` image.\n"
@@ -293,12 +310,13 @@ def main(args):
         die("name must be lowercase letters, digits and dashes:", repr(name))
 
     repo = opts["repo"]
-    d = os.path.join(repo, "containers", name)
+    sub = opts["dir"]
+    d = os.path.join(repo, sub, name)
     if os.path.exists(d) and not opts["force"]:
-        die("containers/" + name + " already exists -- pass --force")
+        die(f"{sub}/{name} already exists -- pass --force")
     os.makedirs(d, exist_ok=True)
 
-    print(f"containers/{name}:")
+    print(f"{sub}/{name}:")
     write(repo, os.path.join(d, "container.toml"), container_toml(opts))
     write(repo, os.path.join(d, "container.py"), container_py(opts["runtime"]))
     write(repo, os.path.join(d, "main.py"), MAIN_PY)
@@ -306,13 +324,13 @@ def main(args):
     if opts["flake"]:
         write(repo, os.path.join(d, "flake.nix"), flake_nix(opts))
         # nix refuses to look at a flake git does not know about.
-        subprocess.run(["git", "add", f"containers/{name}/flake.nix"], cwd=repo)
+        subprocess.run(["git", "add", f"{sub}/{name}/flake.nix"], cwd=repo)
         print("   (running nix flake lock)", flush=True)
         subprocess.run(["nix", "flake", "lock"], cwd=d)
 
     print()
     print("next:")
-    print(f"  edit containers/{name}/main.py")
+    print(f"  edit {sub}/{name}/main.py")
     print(f"  scripts/deploy {name}")
 
 

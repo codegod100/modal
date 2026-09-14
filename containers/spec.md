@@ -14,6 +14,22 @@ applied.
 Create one with `scripts/new-container <name>`, deploy it with
 `scripts/deploy <name>`.
 
+## Where a container lives
+
+In this repo, `containers/`. A container here *is* the product, so it sits
+in the open beside the loader that reads it.
+
+Everywhere else, `.modal/` -- which is what `scripts/new-container` writes by
+default, since it scaffolds into whatever repo you are standing in. A repo
+that merely builds itself on Modal is not made of containers; the container is
+CI config beside source it is not part of, and belongs with `.github/` rather
+than beside the source trees. `--dir` overrides either way.
+
+`scripts/deploy` looks in both and reports a name from whichever holds it, so
+nothing depends on choosing right. The layout is otherwise identical -- both
+sit one level under the repo root, so `container.py` finds `_loader.py` beside
+its parent exactly as before.
+
 ## Every key
 
 Only `[container] name` is required. Everything below shows its default.
