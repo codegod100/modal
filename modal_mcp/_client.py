@@ -1,11 +1,21 @@
 """Modal API client management for the MCP server.
 
-Inside a Modal container ``Client.from_env()`` deliberately ignores
-``MODAL_TOKEN_ID`` / ``MODAL_TOKEN_SECRET`` and authenticates as the container
-task, which cannot make workspace-level calls such as ``AppList``. So when
-tokens are present we always build the client explicitly with
-``_Client.from_credentials``, which is the supported way to act on behalf of a
-workspace from anywhere.
+Credentials resolve in three ways, in order:
+
+1. ``MODAL_TOKEN_ID`` / ``MODAL_TOKEN_SECRET``, used to act as a specific
+   workspace from anywhere. Only needed to act as a *different* workspace than
+   the one the server runs in.
+2. Otherwise ``Client.from_env()``. Inside a Modal container this authenticates
+   as the container's own task identity, which carries the permissions of the
+   workspace the app is deployed in -- verified to cover both reads (AppList,
+   VolumeList, SecretList) and writes (Dict create/delete, Sandbox
+   create/exec/terminate). This is why a deployed server needs no token.
+3. Locally, ``Client.from_env()`` reads the ``~/.modal.toml`` profile that
+   ``modal token new`` writes, so the CLI login is enough.
+
+Note that inside a container ``from_env()`` deliberately *ignores* the token
+environment variables, so case 1 must construct the client explicitly with
+``_Client.from_credentials`` rather than setting env vars and hoping.
 """
 
 import asyncio
@@ -36,6 +46,8 @@ async def get_client() -> _Client:
     async with _lock_for_loop():
         if _client is not None:
             return _client
+        # Explicit tokens are optional: they only matter when the server should
+        # act as a workspace other than the one it runs in.
         token_id = os.environ.get("MODAL_TOKEN_ID")
         token_secret = os.environ.get("MODAL_TOKEN_SECRET")
         if token_id and token_secret:
@@ -46,8 +58,9 @@ async def get_client() -> _Client:
                 _client = await _Client.from_env()
             except Exception as exc:
                 raise ConfigError(
-                    "No Modal credentials. Set MODAL_TOKEN_ID and MODAL_TOKEN_SECRET, "
-                    "or run `modal token new` to create a local profile."
+                    "No Modal credentials. Run `modal token new` for a local profile, "
+                    "or set MODAL_TOKEN_ID and MODAL_TOKEN_SECRET. When deployed on "
+                    "Modal the container's own identity is used and neither is needed."
                 ) from exc
         return _client
 

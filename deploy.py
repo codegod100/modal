@@ -3,9 +3,12 @@
     modal deploy deploy.py
 
 Requires a Modal secret named `modal-mcp` holding:
-    MODAL_TOKEN_ID      workspace API token id      (modal token new / dashboard)
-    MODAL_TOKEN_SECRET  workspace API token secret
     MCP_AUTH_TOKEN      bearer token MCP clients must present
+
+No Modal API token is needed. The container authenticates to Modal with its own
+task identity, which carries the permissions of the workspace the app is
+deployed in. Add MODAL_TOKEN_ID / MODAL_TOKEN_SECRET to the secret only to make
+the server act as a *different* workspace.
 
 See README.md for the one-liner that creates it.
 """
@@ -23,10 +26,7 @@ image = (
 
 app = modal.App(APP_NAME)
 
-secret = modal.Secret.from_name(
-    SECRET_NAME,
-    required_keys=["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "MCP_AUTH_TOKEN"],
-)
+secret = modal.Secret.from_name(SECRET_NAME, required_keys=["MCP_AUTH_TOKEN"])
 
 
 @app.function(

@@ -17,20 +17,20 @@ modal token new
 
 ### 2. Create the secret the deployed server reads
 
-The server authenticates to Modal with a workspace API token, and authenticates
-*its own callers* with a bearer token you choose.
-
-Create an API token at https://modal.com/settings/tokens, then:
+The deployed server needs **no Modal API token**: the container authenticates
+with its own task identity, which carries the permissions of the workspace the
+app is deployed in. The only secret it needs is the bearer token that
+authenticates *its own callers*.
 
 ```bash
 export MCP_TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
 echo "save this, it is your MCP bearer token: $MCP_TOKEN"
 
-modal secret create modal-mcp \
-  MODAL_TOKEN_ID=ak-xxxxxxxx \
-  MODAL_TOKEN_SECRET=as-xxxxxxxx \
-  MCP_AUTH_TOKEN=$MCP_TOKEN
+modal secret create modal-mcp MCP_AUTH_TOKEN=$MCP_TOKEN
 ```
+
+Add `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` to that secret only if you want the
+server to act as a *different* workspace than the one it runs in.
 
 ### 3. Deploy
 
@@ -100,7 +100,7 @@ Two behaviours worth knowing:
 
 | Variable | Purpose |
 | --- | --- |
-| `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` | Workspace credentials the tools act with. Required when deployed. |
+| `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` | Optional. Act as a specific workspace. Unset, the server uses the container's own identity when deployed, or your `~/.modal.toml` profile locally. |
 | `MCP_AUTH_TOKEN` | Bearer token callers must present. Required when served over HTTP; min 16 chars. |
 | `MODAL_ENVIRONMENT` | Default environment for tools that don't name one. |
 | `MODAL_MCP_READ_ONLY` | Set to `1` to register only the 16 read-only tools. |
@@ -113,11 +113,13 @@ idle server costs nothing and the first call after a lull pays a cold start. Set
 
 ## Notes on the design
 
-- **Credentials.** Inside a Modal container, `Client.from_env()` deliberately
-  ignores `MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` and authenticates as the
-  container task, which can't make workspace-level calls. The server therefore
-  builds its client with `Client.from_credentials`, the supported path for
-  acting on behalf of a workspace.
+- **No API token needed when deployed.** A container authenticates with its own
+  task identity, which carries the permissions of the workspace the app runs in
+  — verified against a live workspace for both reads (`AppList`, `VolumeList`,
+  `SecretList`) and writes (Dict create/delete, Sandbox create/exec/terminate).
+  Tokens stay supported for acting as a different workspace, and in that case
+  the client must be built with `Client.from_credentials`, since `from_env()`
+  deliberately ignores those variables inside a container.
 - **Auth is mandatory over HTTP.** A Modal web endpoint is publicly reachable,
   and these tools can stop apps and read secrets metadata. `build_asgi_app()`
   refuses to start without `MCP_AUTH_TOKEN`, rather than defaulting to open.
