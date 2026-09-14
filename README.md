@@ -2,6 +2,12 @@
 
 Modal images and the workarounds they needed.
 
+## `mcp/` -- MCP server for Modal
+
+An MCP server exposing this workspace as tools (apps, functions, logs,
+containers, sandboxes, volumes, secrets, cost), deployable to Modal itself.
+See [mcp/README.md](mcp/README.md).
+
 ## `arch_nix.py` -- Arch Linux + nix
 
     modal run arch_nix.py          # verifies nix, publishes arch-nix:latest
