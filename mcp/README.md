@@ -1,136 +1,126 @@
 # modal-mcp
 
-An MCP server that exposes [Modal](https://modal.com) to an agent by driving the
-`modal` CLI rather than reimplementing Modal's API.
+An MCP server for [Modal](https://modal.com) using the public Python SDK directly.
+MCP requests do not invoke the Modal CLI, launch local subprocesses, generate
+Python scripts, or expose an arbitrary command escape hatch.
 
-Run it locally over stdio against your own CLI login, or deploy it to Modal and
-sign in with your Modal account. Either way there is no token to copy around,
-and features Modal adds to the CLI are reachable the day they ship.
+Requires Modal **1.6 or newer** and FastMCP 4. Local stdio uses the existing Modal
+profile; the hosted server binds each request to that caller's Modal credentials.
 
-## Two ways to run it
-
-### Hosted on Modal, sign in with Modal
+## Run locally
 
 ```bash
-cd mcp && pip install -e .
-modal deploy deploy.py
-```
-
-Then add the printed URL as an MCP server, using the full endpoint path:
-
-```
-https://<workspace>--modal-mcp.modal.run/mcp
-```
-
-No secret, no API token, nothing to paste. The client discovers the server's
-OAuth metadata, registers itself, and sends you to Modal to sign in. Each caller
-ends up acting as themselves: their own Modal token is what their commands run
-with, so authenticating and being authorized are the same act.
-
-Restrict who may use it by setting `MODAL_MCP_ALLOWED_WORKSPACES` to a
-comma-separated list of workspace names. Without it, anyone who completes a
-Modal login can connect -- they act as their own account and cannot touch yours,
-but they can spend their own Modal compute through your server.
-
-### Locally over stdio
-
-```bash
-modal token new                       # one-time
+cd mcp
+pip install -e .
+modal token new  # if you do not already have a Modal profile
 claude mcp add modal -- /path/to/mcp/.venv/bin/modal-mcp
 ```
 
-No deployment and no auth: the server runs on your machine and inherits your
-CLI login from `~/.modal.toml`.
+The vendor CLI above is only for developer setup. Tool operations use SDK clients
+constructed explicitly from the selected profile's credentials.
+
+## Host on Modal
+
+```bash
+cd mcp
+pip install -e .
+modal deploy deploy.py
+```
+
+Connect your MCP client to `https://<workspace>--modal-mcp.modal.run/mcp` and sign
+in with Modal. Each caller's tools use their own credentials, never the host
+container's identity. No profile or credential environment variables are mutated.
+Missing or malformed hosted credentials fail closed. A fresh client is closed
+when each operation finishes, including failed operations.
+
+The existing browser login uses Modal's internal `TokenFlowCreate` and
+`TokenFlowWait` device-grant RPCs. These are **not a supported public SDK login
+API** and remain a compatibility dependency of hosted login. This refactor adds
+no internal RPCs to tools; it preserves that existing login flow. Migrating login
+to Modal-issued OAuth client credentials is separate work requiring client setup.
+
+Auth sessions stay in memory and are lost on scaledown; `max_containers=1` keeps
+requests on the same process. `MODAL_MCP_ALLOWED_WORKSPACES` can restrict login.
 
 ## Tools
 
-**Workspace** — `whoami`, `list_environments`, `get_workspace_costs`
-(one billing cycle: `"this month"`, `"last month"`, or `"2026-08"`)
+| Area | Tools | Public SDK operations |
+| --- | --- | --- |
+| Workspace | `whoami`, `list_environments`, `get_workspace_costs` | `Workspace.from_context`, `Environment.objects.list`, `Workspace.billing.summary` |
+| Apps | `list_apps`, `get_app`, `get_app_logs` | `Environment.apps.list`, `App.lookup`, `App.info`, `App.logs.fetch` |
+| Functions | `get_function_stats`, `call_function`, `spawn_function`, `get_function_call_result`, `cancel_function_call` | `Function.from_name`, stats/remote/spawn, `FunctionCall.from_id`, get/cancel |
+| HTTP services | `deploy_service` | `App.server`, `App.deploy`, `Server.from_name`, `Server.get_url` |
+| Sandboxes | `create_sandbox`, `sandbox_exec`, `list_sandboxes`, `terminate_sandbox` | `Sandbox.create`, exec/list/from_id/terminate |
+| Storage | `list_volumes`, `list_volume_files`, `read_volume_file`, `list_secrets`, `create_secret`, `list_dicts`, `list_queues` | Object managers, `Volume.iterdir`/read_file, `Secret.update` |
 
-**Apps** — `list_apps`, `get_app`, `get_app_logs`, `get_deployment_history`,
-`stop_app`
+Environment-aware tools accept `environment`. Without it, hosted calls resolve the
+caller's workspace default; local stdio first honors the local Modal environment
+configuration. Every handle and API call is bound to the caller's explicit client.
 
-**Functions** — `get_function_stats`, `call_function`, `spawn_function`,
-`get_function_call_result`, `cancel_function_call`
+`MODAL_MCP_READ_ONLY=1` (also `true` or `yes`) registers only the **14 read tools**.
+All write implementations also enforce this policy when called directly. Function
+result polling retains its previous conservative classification as a write tool.
 
-**Containers** — `list_containers`, `stop_container`
+## Deploy an HTTP service through the API
 
-**Sandboxes** — `create_sandbox`, `sandbox_exec`, `list_sandboxes`,
-`terminate_sandbox`
+Call `deploy_service` with structured arguments, for example:
 
-**Storage** — `list_volumes`, `list_volume_files`, `read_volume_file`,
-`list_secrets`, `create_secret`, `list_dicts`, `list_queues`
+```json
+{
+  "app": "example-http",
+  "image": "python:3.12-slim",
+  "argv": ["python", "-m", "http.server", "8080", "--bind", "0.0.0.0"],
+  "port": 8080,
+  "environment": "main",
+  "cpu": 1.0,
+  "memory_mb": 512,
+  "min_containers": 0,
+  "max_containers": 1,
+  "startup_timeout_seconds": 60
+}
+```
 
-**Escape hatch** — `modal_cli(args="app list --json")` runs any `modal` command,
-including `--help`, for anything without a named tool.
+This creates or updates the named app. Reusing an app name replaces its previous
+app definition. The service and its dependencies must be in the public registry
+image; Python 3.12 is added for Modal's runtime. The argv command starts only in
+the service container, through a serialized `@modal.enter()` hook. It must bind
+`0.0.0.0` on the declared port. The endpoint requires Modal proxy authentication;
+the tool returns its URL and does not create or expose proxy credentials.
 
-Apps are addressable by deployed name (`my-app`) or app ID (`ap-...`).
-Tools take an optional `environment`; omitted, they use the CLI's default.
+The tool does not accept Python source, import caller modules, upload local source,
+or run a shell command on the MCP host. Private registry credentials and arbitrary
+source-based app deployment are outside this tool's scope.
 
-## How it works
+## API limits and changes
 
-Most tools map onto a CLI command, preferring `--json`:
+- The public SDK lists **live apps**, excluding stopped and disabled apps. App
+  metadata now includes current lifecycle, functions, and server IDs, but no full
+  deployment history. `get_deployment_history` was removed.
+- `stop_app`, `list_containers`, and `stop_container` were removed because the
+  documented public SDK has no corresponding management methods. Function stats
+  still report container counts. Use Modal's dashboard for those management tasks.
+- `modal_cli` and the CLI/script adapters were removed entirely.
+- `list_sandboxes` filters by live apps in the resolved environment. `sandbox_exec`
+  still runs the explicitly requested command inside a remote sandbox via its SDK.
+- Storage listings return SDK metadata and default to 100 named objects. Secret
+  values are never returned. `create_secret(overwrite=true)` merges supplied keys
+  through `Secret.update`; existing unspecified keys remain intact.
+- Volume reads return the first `max_bytes` bytes, decoded as UTF-8 with replacement
+  for invalid bytes. Limits count bytes, not characters. Billing decimals are
+  returned as strings to retain precision.
+- A `call_function` timeout stops waiting and does not cancel the remote call.
 
-| Tool | Command |
-| --- | --- |
-| `list_apps` | `modal app list --json` |
-| `get_app_logs` | `modal app logs <app> --since 30m --tail 200` |
-| `list_volume_files` | `modal volume ls <vol> <path> --json` |
-| `read_volume_file` | `modal volume get <vol> <path> -` |
-| `get_workspace_costs` | `modal billing summary --for "this month" --json` |
+## Offline verification
 
-Sandboxes and calls into deployed Functions have **no CLI subcommand**. Those
-tools generate a short Python script and run it with `modal run`, parsing one
-sentinel-prefixed JSON line out of the output. It costs a few seconds per call —
-measured at ~3s to create a sandbox and ~6s to exec in one — and everything else
-is a direct CLI invocation.
+```bash
+pip install -e '.[dev]'
+pytest -q
+ruff check .
+ruff format --check .
+mypy modal_mcp
+```
 
-A sandbox is created under a looked-up (persistent) app, so it outlives the
-ephemeral driver app and `create_sandbox` → `sandbox_exec` → `terminate_sandbox`
-works across separate calls.
-
-## Configuration
-
-| Variable | Purpose |
-| --- | --- |
-| `MODAL_ENVIRONMENT` | Default environment for tools that don't name one. |
-| `MODAL_MCP_READ_ONLY` | Set to `1` to register only the 16 read-only tools. |
-| `MODAL_MCP_MODAL_BIN` | Path to the `modal` executable, if not beside the running interpreter or on `PATH`. |
-| `MODAL_MCP_BASE_URL` | Hosted only: the server's own public URL. OAuth metadata and the login redirect must be absolute. `deploy.py` sets it. |
-| `MODAL_MCP_ALLOWED_WORKSPACES` | Hosted only: comma-separated workspaces permitted to sign in. Unset means any Modal user may connect. |
-
-## How sign-in works
-
-Modal has no self-serve OAuth for third parties, but `modal token new` is an
-RFC 8628-style device grant: `TokenFlowCreate` returns a modal.com URL, the user
-approves in a browser, and `TokenFlowWait` yields their API token and workspace
-name. It works with `localhost_port=0`, so no local callback server is needed
-and it can be driven from a container.
-
-MCP clients only drive login automatically when the server implements the MCP
-authorization spec, so `auth.py` wraps that device flow in a standard OAuth 2.1
-server. FastMCP's `InMemoryOAuthProvider` supplies registration, PKCE, codes and
-refresh; only the "who is this user" step is replaced. `authorize()` cannot
-block for a browser login, so it redirects to a page that sends the user to
-Modal and polls until approval lands, then forwards to the client's redirect URI
-with an ordinary authorization code.
-
-Two consequences worth knowing:
-
-- **The server holds your Modal token**, in process memory only, never on disk.
-  That is inherent to server-managed calls and is what a real refresh token
-  would avoid.
-- **Sessions do not survive scaledown.** Auth state is in-process, so the
-  deployment pins `max_containers=1`; raising it would break sign-in
-  intermittently. With `min_containers=0` the container goes away when idle and
-  clients sign in again.
-
-## Known limits
-
-- **`get_app` cannot list an app's Functions.** Modal exposes no way to read a
-  deployed App's layout: `App.registered_functions` is documented as not working
-  for an App fetched via `lookup`, and there is no CLI equivalent. The tool
-  returns app metadata, deployment history, and a dashboard URL instead.
-- **Sandbox and Function-call tools are slower** than the rest, for the reason
-  above.
-- **Secret values are never returned.** `list_secrets` reports names only.
+Tests mock SDK calls and assert that no network or local process execution occurs.
+They cover the MCP inventory, typed service deployment, SDK call arguments,
+read-only enforcement, per-caller client binding, missing hosted credentials, and
+OAuth credential propagation. They do not deploy or mutate live Modal resources.

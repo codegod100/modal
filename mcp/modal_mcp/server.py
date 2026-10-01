@@ -1,30 +1,29 @@
-"""FastMCP server exposing the local Modal CLI as tools."""
+"""FastMCP server exposing caller-scoped Modal Python SDK operations."""
 
 import os
 
 from fastmcp import FastMCP
 
 from . import tools
-from ._cli import read_only
+from ._sdk import bind_tool, read_only
 
 INSTRUCTIONS = """\
-Tools for inspecting and operating a Modal.com workspace through the `modal`
-CLI installed on this machine: apps, functions, logs, containers, sandboxes,
-volumes, secrets and cost.
+Tools for inspecting and operating a Modal.com workspace through the public
+Modal Python SDK: apps, functions, logs, sandboxes, storage, billing and typed
+HTTP service deployment. Every operation uses the authenticated caller's client.
 
 Start with `whoami` to confirm which workspace and environment you are acting
-on. Most tools take an optional `environment`; omitted, they use the CLI's
-default.
+on. Most tools take an optional `environment`; omitted, hosted calls use the
+caller's workspace default and local stdio honors the local profile configuration.
 
-Apps can be addressed by their deployed name (e.g. "my-app") or app ID
-(e.g. "ap-..."). Use `list_apps` to discover both.
+Live apps can be addressed by their deployed name (e.g. "my-app") or app ID
+(e.g. "ap-..."). Use `list_apps` to discover both. Stopped apps, historical
+deployment versions and arbitrary container management are not exposed.
 
-Anything not covered by a named tool can be run with `modal_cli`, which takes a
-raw argument string (e.g. "app list --json"). Modal adds CLI features
-regularly, so consult `modal_cli(args="--help")` rather than assuming.
-
-Sandbox and Function-call tools take noticeably longer than the rest: the CLI
-has no subcommand for them, so they run a short generated script.
+Deploy an HTTP service with deploy_service using a container image, argv and
+port. This creates or updates the named app and requires Modal proxy auth for
+its endpoint. It does not accept Python source or execute commands locally.
+Sandbox commands run inside the selected sandbox through the SDK.
 """
 
 # Tools that only read state.
@@ -35,9 +34,7 @@ READ_TOOLS = [
     tools.list_apps,
     tools.get_app,
     tools.get_app_logs,
-    tools.get_deployment_history,
     tools.get_function_stats,
-    tools.list_containers,
     tools.list_sandboxes,
     tools.list_volumes,
     tools.list_volume_files,
@@ -57,20 +54,17 @@ WRITE_TOOLS = [
     tools.sandbox_exec,
     tools.terminate_sandbox,
     tools.create_secret,
-    tools.stop_app,
-    tools.stop_container,
-    # Raw CLI access can do anything the CLI can, so it counts as a write tool.
-    tools.modal_cli,
+    tools.deploy_service,
 ]
 
 
 def build_mcp(auth=None) -> FastMCP:
     mcp = FastMCP(name="modal", instructions=INSTRUCTIONS, auth=auth)
     for fn in READ_TOOLS:
-        mcp.tool(fn)
+        mcp.tool(bind_tool(fn, require_auth=auth is not None))
     if not read_only():
         for fn in WRITE_TOOLS:
-            mcp.tool(fn)
+            mcp.tool(bind_tool(fn, require_auth=auth is not None, write=True))
     return mcp
 
 
@@ -79,7 +73,7 @@ def build_asgi_app(base_url: str | None = None):
 
     Callers run through an OAuth flow whose login step is Modal's device token
     flow, so each one ends up acting as themselves: their own Modal token is
-    what the CLI runs with. There is no shared secret and no allowlist to keep
+    what the SDK client runs with. There is no shared secret and no allowlist to keep
     in sync -- authenticating *is* being that Modal user.
 
     Requires MODAL_MCP_BASE_URL, the server's own public URL, because OAuth
@@ -113,14 +107,12 @@ def build_asgi_app(base_url: str | None = None):
     async def _root(request):
         return RedirectResponse("/mcp", status_code=307)
 
-    app.router.routes.append(
-        Route("/", _root, methods=["GET", "POST", "DELETE", "OPTIONS"])
-    )
+    app.router.routes.append(Route("/", _root, methods=["GET", "POST", "DELETE", "OPTIONS"]))
     return app
 
 
 def main() -> None:
-    """Entry point: serve over stdio against the local Modal CLI."""
+    """Entry point: serve over stdio using the local Modal profile's SDK client."""
     build_mcp().run()
 
 

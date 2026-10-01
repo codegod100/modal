@@ -4,9 +4,9 @@ Modal images and the workarounds they needed.
 
 ## `mcp/` -- MCP server for Modal
 
-An MCP server that gives an agent this workspace as tools (apps, functions,
-logs, containers, sandboxes, volumes, secrets, cost) by driving the local
-`modal` CLI. Runs over stdio, no deployment or tokens.
+An MCP server for apps, functions, logs, sandboxes, storage, billing, and typed
+HTTP service deployment through the public Modal Python SDK. Runs over stdio
+with a local profile or over HTTP with caller-scoped Modal authentication.
 See [mcp/README.md](mcp/README.md).
 
 ## `arch_nix.py` -- Arch Linux + nix

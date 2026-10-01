@@ -48,24 +48,9 @@ WAIT_POLL_SECONDS = 15.0
 class ModalCredentials:
     """A Modal API token obtained from a completed token flow."""
 
-    token_id: str
-    token_secret: str
+    token_id: str = field(repr=False)
+    token_secret: str = field(repr=False)
     workspace: str
-
-    def env(self) -> dict[str, str | None]:
-        """Environment for running the Modal CLI as this user.
-
-        MODAL_IS_REMOTE must be cleared: inside a container the Modal client
-        treats it as authoritative and *silently ignores* token environment
-        variables, which would run every caller's commands with the container's
-        own workspace-wide identity. `_cli.py` enforces this too; it is the one
-        mistake in this design that fails open.
-        """
-        return {
-            "MODAL_IS_REMOTE": None,
-            "MODAL_TOKEN_ID": self.token_id,
-            "MODAL_TOKEN_SECRET": self.token_secret,
-        }
 
 
 @dataclass
@@ -202,8 +187,9 @@ class ModalTokenFlowProvider(InMemoryOAuthProvider):
     async def exchange_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code
     ) -> OAuthToken:
-        credentials = self._credentials.pop(authorization_code.code, None)
+        credentials = self._credentials.get(authorization_code.code)
         token = await super().exchange_authorization_code(client, authorization_code)
+        self._credentials.pop(authorization_code.code, None)
         if credentials is not None:
             # Re-key the credentials onto the access token the caller will present.
             self._credentials[token.access_token] = credentials
@@ -212,9 +198,7 @@ class ModalTokenFlowProvider(InMemoryOAuthProvider):
         return token
 
     async def exchange_refresh_token(self, client, refresh_token, scopes):
-        credentials = self._credentials.get(
-            getattr(refresh_token, "token", "") or ""
-        )
+        credentials = self._credentials.get(getattr(refresh_token, "token", "") or "")
         token = await super().exchange_refresh_token(client, refresh_token, scopes)
         if credentials is not None:
             self._credentials[token.access_token] = credentials

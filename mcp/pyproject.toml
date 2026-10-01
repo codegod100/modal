@@ -1,15 +1,32 @@
 [project]
 name = "modal-mcp"
-version = "0.2.0"
-description = "MCP server exposing the local Modal CLI as tools"
+version = "0.3.0"
+description = "MCP server exposing caller-scoped Modal Python SDK operations"
 requires-python = ">=3.10"
 dependencies = [
-    "modal~=1.5",
+    "modal>=1.6,<2",
     "fastmcp~=4.0",
 ]
 
 [project.scripts]
 modal-mcp = "modal_mcp.server:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6", "mypy>=1.11"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.mypy]
+python_version = "3.10"
+check_untyped_defs = true
+ignore_missing_imports = true
 
 [build-system]
 requires = ["setuptools>=68"]

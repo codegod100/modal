@@ -4,7 +4,7 @@
 
 No secret and no API token to create. Callers sign in with Modal through the
 same device flow as `modal token new`, and each one's own token is what their
-commands run with -- so authenticating and being authorized are the same act.
+SDK requests run with -- so authenticating and being authorized are the same act.
 
 The published URL is derived from the workspace and label below. Override it
 with MODAL_MCP_BASE_URL if you deploy under a different name, since OAuth
@@ -17,13 +17,11 @@ import modal
 
 APP_NAME = "modal-mcp"
 WORKSPACE = os.environ.get("MODAL_MCP_WORKSPACE", "codegod100")
-BASE_URL = os.environ.get(
-    "MODAL_MCP_BASE_URL", f"https://{WORKSPACE}--{APP_NAME}.modal.run"
-)
+BASE_URL = os.environ.get("MODAL_MCP_BASE_URL", f"https://{WORKSPACE}--{APP_NAME}.modal.run")
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    .pip_install("modal~=1.5", "fastmcp~=4.0")
+    .pip_install("modal>=1.6,<2", "fastmcp~=4.0")
     .add_local_python_source("modal_mcp")
 )
 

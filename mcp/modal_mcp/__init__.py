@@ -1,4 +1,4 @@
-"""MCP server exposing the local Modal CLI as tools."""
+"""MCP server exposing caller-scoped Modal Python SDK operations."""
 
 __all__ = ["build_mcp"]
 
