@@ -1,6 +1,6 @@
 """Deploy the Modal MCP server to Modal.
 
-    modal deploy deploy.py
+    modal deploy app.py
 
 No secret and no API token to create. Callers sign in with Modal through the
 same device flow as `modal token new`, and each one's own token is what their

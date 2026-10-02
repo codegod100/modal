@@ -95,7 +95,7 @@ def build_asgi_app(base_url: str | None = None):
     # Deliberately NOT stateless: stateless mode drops the GET route on /mcp, so
     # a client probing with GET gets a bare 405 with no WWW-Authenticate and
     # cannot discover how to sign in. Auth state already pins this deployment to
-    # one container (see deploy.py), so sessions cost nothing extra.
+    # one container (see app.py), so sessions cost nothing extra.
     app = mcp.http_app(path="/mcp")
 
     # Clients are often given the bare origin rather than the full endpoint, and
