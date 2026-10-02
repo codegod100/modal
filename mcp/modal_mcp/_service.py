@@ -44,3 +44,41 @@ def service_app(
             self.process.terminate()
 
     return app
+
+
+def web_function_app(
+    name: str,
+    image: str,
+    argv: list[str],
+    port: int,
+    cpu: float,
+    memory_mb: int,
+    min_containers: int,
+    max_containers: int,
+    startup_timeout_seconds: int,
+    public: bool,
+    add_python: str | None,
+):
+    """A web_server function; unlike App.server it can serve without proxy auth."""
+    app = modal.App(name)
+    command = list(argv)
+
+    @app.function(
+        image=modal.Image.from_registry(image, add_python=add_python),
+        name="web",
+        cpu=cpu,
+        memory=memory_mb,
+        min_containers=min_containers,
+        max_containers=max_containers,
+        serialized=True,
+        include_source=False,
+    )
+    @modal.web_server(port, startup_timeout=startup_timeout_seconds, requires_proxy_auth=not public)
+    def web():
+        # Serialized and run only in the deployed container. argv is passed
+        # directly, without a shell or host-side execution.
+        import subprocess
+
+        subprocess.Popen(command)
+
+    return app

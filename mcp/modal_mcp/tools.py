@@ -16,7 +16,7 @@ import modal
 from modal.exception import TimeoutError as ModalTimeoutError
 
 from ._sdk import client_session, environment_name, json_value, require_write
-from ._service import service_app
+from ._service import service_app, web_function_app
 
 
 def _positive(value: int, label: str, maximum: int = 10000) -> None:
@@ -301,6 +301,73 @@ async def deploy_service(
             "server_id": server.object_id,
             "url": url,
             "requires_proxy_auth": True,
+        }
+
+
+async def deploy_web_function(
+    app: str,
+    image: str,
+    argv: list[str],
+    port: int,
+    public: bool = False,
+    add_python: str | None = "3.12",
+    environment: str | None = None,
+    cpu: float = 1.0,
+    memory_mb: int = 512,
+    min_containers: int = 0,
+    max_containers: int = 1,
+    startup_timeout_seconds: int = 60,
+) -> dict:
+    """Create or update a named HTTP service as a Modal web function.
+
+    Takes the same inputs as deploy_service but deploys with @modal.web_server,
+    so public=true can serve the endpoint without Modal proxy authentication,
+    e.g. for a website. The registry image must contain the service; argv runs
+    only in the deployed container and must listen on 0.0.0.0:port. Set
+    add_python to null for images that already ship Python (e.g.
+    python:3.12-slim), where adding another fails the image build. Deploying
+    the same app name replaces its previous definition.
+    """
+    require_write()
+    if not app.strip() or not image.strip():
+        raise ValueError("app and image must not be empty")
+    if (
+        not isinstance(argv, list)
+        or not argv
+        or any(not isinstance(arg, str) or not arg or "\x00" in arg for arg in argv)
+    ):
+        raise ValueError("argv must be a non-empty array of non-empty command arguments")
+    _positive(port, "port", 65535)
+    _positive(memory_mb, "memory_mb", 1_000_000)
+    _positive(max_containers, "max_containers", 1000)
+    _positive(startup_timeout_seconds, "startup_timeout_seconds", 3600)
+    if cpu <= 0 or not 0 <= min_containers <= max_containers:
+        raise ValueError("cpu must be positive and 0 <= min_containers <= max_containers")
+    async with client_session() as client:
+        env = await environment_name(client, environment)
+        definition = web_function_app(
+            app,
+            image,
+            argv,
+            port,
+            cpu,
+            memory_mb,
+            min_containers,
+            max_containers,
+            startup_timeout_seconds,
+            public,
+            add_python,
+        )
+        await definition.deploy.aio(environment_name=env, client=client)
+        function = modal.Function.from_name(app, "web", environment_name=env, client=client)
+        url = await function.get_web_url.aio()
+        return {
+            "app": app,
+            "app_id": definition.app_id,
+            "environment": env,
+            "function_id": function.object_id,
+            "url": url,
+            "requires_proxy_auth": not public,
         }
 
 

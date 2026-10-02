@@ -134,3 +134,131 @@ def test_real_sdk_accepts_service_definition_without_network():
         60,
     )
     assert app.name == "offline-example" and app.app_id is None
+
+
+async def test_web_function_deployment_returns_public_url(sdk, monkeypatch):
+    definition = NS(app_id="ap-web", deploy=NS(aio=AsyncMock()))
+    build = Mock(return_value=definition)
+    monkeypatch.setattr(tools, "web_function_app", build)
+    function = NS(
+        object_id="fu-web", get_web_url=NS(aio=AsyncMock(return_value="https://web.modal.run"))
+    )
+    lookup = Mock(return_value=function)
+    monkeypatch.setattr(modal.Function, "from_name", lookup)
+    result = await tools.deploy_web_function(
+        "site",
+        "python:3.12-slim",
+        ["python", "-m", "http.server", "8000"],
+        8000,
+        public=True,
+        add_python=None,
+        environment="dev",
+    )
+    build.assert_called_once_with(
+        "site",
+        "python:3.12-slim",
+        ["python", "-m", "http.server", "8000"],
+        8000,
+        1.0,
+        512,
+        0,
+        1,
+        60,
+        True,
+        None,
+    )
+    definition.deploy.aio.assert_awaited_once_with(environment_name="dev", client=sdk.client)
+    lookup.assert_called_once_with("site", "web", environment_name="dev", client=sdk.client)
+    assert result == {
+        "app": "site",
+        "app_id": "ap-web",
+        "environment": "dev",
+        "function_id": "fu-web",
+        "url": "https://web.modal.run",
+        "requires_proxy_auth": False,
+    }
+
+
+async def test_web_function_defaults_to_proxy_auth(sdk, monkeypatch):
+    definition = NS(app_id="ap-web", deploy=NS(aio=AsyncMock()))
+    build = Mock(return_value=definition)
+    monkeypatch.setattr(tools, "web_function_app", build)
+    function = NS(object_id="fu-web", get_web_url=NS(aio=AsyncMock(return_value="https://x")))
+    monkeypatch.setattr(modal.Function, "from_name", Mock(return_value=function))
+    result = await tools.deploy_web_function("site", "img", ["server"], 8000)
+    assert build.call_args.args[-2:] == (False, "3.12")
+    assert result["requires_proxy_auth"] is True
+
+
+async def test_invalid_web_function_request_fails_before_sdk(sdk):
+    with pytest.raises(ValueError):
+        await tools.deploy_web_function("site", "img", [], 8000)
+    sdk.factory.assert_not_called()
+
+
+@pytest.mark.parametrize("public", [True, False])
+def test_web_function_definition_runs_argv_only_remotely(monkeypatch, public):
+    captured = {}
+    app = NS()
+
+    def register(**kwargs):
+        captured["options"] = kwargs
+        return lambda fn: fn
+
+    def web_server(port, **kwargs):
+        captured["web"] = (port, kwargs)
+
+        def decorator(fn):
+            captured["fn"] = fn
+            return fn
+
+        return decorator
+
+    app.function = register
+    monkeypatch.setattr(modal, "App", Mock(return_value=app))
+    image = object()
+    registry = Mock(return_value=image)
+    monkeypatch.setattr(modal.Image, "from_registry", registry)
+    monkeypatch.setattr(modal, "web_server", web_server)
+    import subprocess
+
+    popen = Mock()
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    assert (
+        _service.web_function_app(
+            "site", "img", ["server", "--port", "8000"], 8000, 1, 512, 0, 1, 60, public, None
+        )
+        is app
+    )
+    popen.assert_not_called()
+    registry.assert_called_once_with("img", add_python=None)
+    assert captured["options"] == {
+        "image": image,
+        "name": "web",
+        "cpu": 1,
+        "memory": 512,
+        "min_containers": 0,
+        "max_containers": 1,
+        "serialized": True,
+        "include_source": False,
+    }
+    assert captured["web"] == (8000, {"startup_timeout": 60, "requires_proxy_auth": not public})
+    captured["fn"]()
+    popen.assert_called_once_with(["server", "--port", "8000"])
+
+
+def test_real_sdk_accepts_web_function_definition_without_network():
+    app = _service.web_function_app(
+        "offline-site",
+        "python:3.12-slim",
+        ["python", "-m", "http.server", "8000"],
+        8000,
+        1,
+        512,
+        0,
+        1,
+        60,
+        True,
+        None,
+    )
+    assert app.name == "offline-site" and app.app_id is None

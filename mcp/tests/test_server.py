@@ -32,6 +32,7 @@ WRITE = {
     "terminate_sandbox",
     "create_secret",
     "deploy_service",
+    "deploy_web_function",
 }
 
 
@@ -66,6 +67,7 @@ async def test_read_only_inventory(monkeypatch, setting):
         ("terminate_sandbox", ("sb-id",)),
         ("create_secret", ("name", '{"key":"value"}')),
         ("deploy_service", ("app", "image", ["server"], 8080)),
+        ("deploy_web_function", ("app", "image", ["server"], 8080)),
     ],
 )
 async def test_write_implementations_fail_before_sdk_call(sdk, monkeypatch, name, args):

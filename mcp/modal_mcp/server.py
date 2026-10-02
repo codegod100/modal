@@ -22,7 +22,9 @@ deployment versions and arbitrary container management are not exposed.
 
 Deploy an HTTP service with deploy_service using a container image, argv and
 port. This creates or updates the named app and requires Modal proxy auth for
-its endpoint. It does not accept Python source or execute commands locally.
+its endpoint. deploy_web_function takes the same inputs and deploys a web
+function instead; with public=true its endpoint needs no proxy auth, so use it
+for websites. Neither accepts Python source or executes commands locally.
 Sandbox commands run inside the selected sandbox through the SDK.
 """
 
@@ -55,6 +57,7 @@ WRITE_TOOLS = [
     tools.terminate_sandbox,
     tools.create_secret,
     tools.deploy_service,
+    tools.deploy_web_function,
 ]
 
 
