@@ -24,7 +24,7 @@ constructed explicitly from the selected profile's credentials.
 ```bash
 cd mcp
 pip install -e .
-modal deploy deploy.py
+modal deploy app.py
 ```
 
 Connect your MCP client to `https://<workspace>--modal-mcp.modal.run/mcp` and sign
