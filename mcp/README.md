@@ -27,6 +27,10 @@ pip install -e .
 modal deploy app.py
 ```
 
+Deploy with a local `modal` client of 1.6 or newer. Modal runs the deploying
+client's version inside the container regardless of the image's `pip_install`,
+and the app tools need 1.6 APIs; `app.py` refuses to deploy from an older client.
+
 Connect your MCP client to `https://<workspace>--modal-mcp.modal.run/mcp` and sign
 in with Modal. Each caller's tools use their own credentials, never the host
 container's identity. No profile or credential environment variables are mutated.

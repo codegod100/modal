@@ -15,6 +15,18 @@ import os
 
 import modal
 
+# Modal mounts the deploying client's own package into the container, shadowing
+# the modal>=1.6 pip_install below, so the server runs whatever version deployed
+# it. The tools use 1.6-only APIs (Environment.apps, App.info), so an older local
+# client deploys a server whose app tools fail with AttributeError.
+_MIN_MODAL = (1, 6)
+if tuple(int(p) for p in modal.__version__.split(".")[:2]) < _MIN_MODAL:
+    raise RuntimeError(
+        f"Deploying with modal {modal.__version__}; upgrade the local client to "
+        f">= {'.'.join(map(str, _MIN_MODAL))} (e.g. `pip install -U 'modal>=1.6,<2'`) "
+        "because the deployed server runs the deploying client's version."
+    )
+
 APP_NAME = "modal-mcp"
 WORKSPACE = os.environ.get("MODAL_MCP_WORKSPACE", "codegod100")
 BASE_URL = os.environ.get("MODAL_MCP_BASE_URL", f"https://{WORKSPACE}--{APP_NAME}.modal.run")
