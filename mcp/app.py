@@ -37,19 +37,31 @@ image = (
     .add_local_python_source("modal_mcp")
 )
 
+# Sign-ins (registered clients, issued tokens and the Modal tokens behind them)
+# are written here so they survive restarts and redeploys. It holds callers'
+# Modal tokens, so anyone who can read this volume can act as them.
+STATE_VOLUME = "modal-mcp-auth-state"
+STATE_DIR = "/state"
+state_volume = modal.Volume.from_name(STATE_VOLUME, create_if_missing=True)
+
 app = modal.App(APP_NAME)
 
 
 @app.function(
     image=image,
-    env={"MODAL_MCP_BASE_URL": BASE_URL},
-    # Pending logins and issued tokens live in this process, so every request
-    # must reach the same container. Raising this without moving that state to
-    # shared storage would make sign-in fail intermittently.
+    env={
+        "MODAL_MCP_BASE_URL": BASE_URL,
+        "MODAL_MCP_STATE_DIR": STATE_DIR,
+        "MODAL_MCP_STATE_VOLUME": STATE_VOLUME,
+    },
+    volumes={STATE_DIR: state_volume},
+    # Pending logins and the live token tables are held in this process and only
+    # read back from the volume at startup, so every request must reach the same
+    # container. Raising this would make sign-in fail intermittently.
     max_containers=1,
-    # Scales to zero, which costs nothing idle but drops sessions when the
-    # container goes away -- clients then sign in again. min_containers=1 avoids
-    # that, at the price of billing continuously.
+    # Scales to zero to cost nothing idle. Sign-ins are restored from the volume
+    # when the next container starts, so callers stay signed in; only an MCP
+    # session in progress is dropped, and clients reconnect on their own.
     min_containers=0,
     scaledown_window=1200,
     timeout=900,

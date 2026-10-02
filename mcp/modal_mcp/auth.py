@@ -9,7 +9,9 @@ callback server is needed and it can be driven from a container.
 MCP clients only drive login automatically when the server implements the MCP
 authorization spec, so this wraps that device flow in a standard OAuth 2.1
 server. `InMemoryOAuthProvider` supplies registration, PKCE, codes and refresh;
-only the "who is this user" step is replaced.
+only the "who is this user" step is replaced. With a `JsonFileStore`, its tables
+are written out after every change and read back on first use, so sign-ins
+survive restarts.
 
 `authorize()` cannot block for a browser login, so it redirects to a local page
 that sends the user to Modal and polls until the flow lands, then forwards to
@@ -22,14 +24,24 @@ Set `allowed_workspaces` to narrow it further.
 
 import asyncio
 import html
+import json
 import logging
+import os
 import secrets
 import time
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 from fastmcp.server.auth.providers.in_memory import InMemoryOAuthProvider
-from mcp.server.auth.provider import AuthorizationParams, AuthorizeError
+from mcp.server.auth.provider import (
+    AccessToken,
+    AuthorizationCode,
+    AuthorizationParams,
+    AuthorizeError,
+    RefreshToken,
+)
 from mcp.server.auth.settings import ClientRegistrationOptions
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from starlette.requests import Request
@@ -53,6 +65,38 @@ class ModalCredentials:
     workspace: str
 
 
+class JsonFileStore:
+    """Keeps sign-in state in one JSON file so it outlives the process.
+
+    Hosted, the file sits on a Modal Volume and `commit` is that volume's commit,
+    so registrations and tokens survive container restarts and redeploys and
+    callers are not sent back through login each time the server scales to zero.
+    The file holds callers' Modal tokens: anyone who can read the volume can act
+    as them, so keep it in a workspace whose members you would trust with that.
+    """
+
+    def __init__(self, path: str | Path, commit: Callable[[], Awaitable[None]] | None = None):
+        self._path = Path(path)
+        self._commit = commit
+
+    async def load(self) -> dict | None:
+        try:
+            return json.loads(self._path.read_text())
+        except FileNotFoundError:
+            return None
+
+    async def save(self, state: dict) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._path.with_name(self._path.name + ".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(state, f)
+        # Atomic swap: a crash mid-write leaves the previous state, not a torn file.
+        os.replace(tmp, self._path)
+        if self._commit is not None:
+            await self._commit()
+
+
 @dataclass
 class _PendingLogin:
     client: OAuthClientInformationFull
@@ -74,6 +118,7 @@ class ModalTokenFlowProvider(InMemoryOAuthProvider):
         *,
         base_url: str,
         allowed_workspaces: list[str] | None = None,
+        state_store: JsonFileStore | None = None,
         **kwargs,
     ):
         kwargs.setdefault(
@@ -87,6 +132,80 @@ class ModalTokenFlowProvider(InMemoryOAuthProvider):
         self._logins: dict[str, _PendingLogin] = {}
         # Modal credentials, keyed by the access token we issued for them.
         self._credentials: dict[str, ModalCredentials] = {}
+        # Without a store, state is process-local and every restart signs callers out.
+        self._store = state_store
+        self._loaded = state_store is None
+        self._state_lock = asyncio.Lock()
+
+    # -- persistence ------------------------------------------------------
+
+    def _snapshot(self) -> dict:
+        live = {*self.auth_codes, *self.access_tokens, *self.refresh_tokens}
+        # Rotation leaves credentials keyed by tokens that no longer exist; drop them
+        # so neither memory nor the stored file keeps dead copies of Modal secrets.
+        for key in [k for k in self._credentials if k not in live]:
+            del self._credentials[key]
+        return {
+            "version": 1,
+            "clients": {k: v.model_dump(mode="json") for k, v in self.clients.items()},
+            "auth_codes": {k: v.model_dump(mode="json") for k, v in self.auth_codes.items()},
+            "access_tokens": {k: v.model_dump(mode="json") for k, v in self.access_tokens.items()},
+            "refresh_tokens": {
+                k: v.model_dump(mode="json") for k, v in self.refresh_tokens.items()
+            },
+            "access_to_refresh": dict(self._access_to_refresh_map),
+            "refresh_to_access": dict(self._refresh_to_access_map),
+            "credentials": {k: asdict(v) for k, v in self._credentials.items()},
+        }
+
+    def _restore(self, state: dict) -> None:
+        self.clients = {
+            k: OAuthClientInformationFull.model_validate(v) for k, v in state["clients"].items()
+        }
+        self.auth_codes = {
+            k: AuthorizationCode.model_validate(v) for k, v in state["auth_codes"].items()
+        }
+        self.access_tokens = {
+            k: AccessToken.model_validate(v) for k, v in state["access_tokens"].items()
+        }
+        self.refresh_tokens = {
+            k: RefreshToken.model_validate(v) for k, v in state["refresh_tokens"].items()
+        }
+        self._access_to_refresh_map = dict(state["access_to_refresh"])
+        self._refresh_to_access_map = dict(state["refresh_to_access"])
+        self._credentials = {k: ModalCredentials(**v) for k, v in state["credentials"].items()}
+
+    async def _ensure_loaded(self) -> None:
+        if self._loaded or self._store is None:
+            return
+        async with self._state_lock:
+            if self._loaded:
+                return
+            try:
+                state = await self._store.load()
+            except Exception:
+                # Fail open to an empty store: callers sign in again, which beats
+                # the whole server refusing every request over a bad file.
+                logger.exception("could not load stored sign-in state; starting empty")
+                state = None
+            if state:
+                self._restore(state)
+                logger.info(
+                    "restored %d clients and %d refresh tokens",
+                    len(self.clients),
+                    len(self.refresh_tokens),
+                )
+            self._loaded = True
+
+    async def _persist(self) -> None:
+        if self._store is None:
+            return
+        async with self._state_lock:
+            try:
+                await self._store.save(self._snapshot())
+            except Exception:
+                # The in-memory state is still correct; only durability is lost.
+                logger.exception("could not persist sign-in state")
 
     # -- login plumbing ---------------------------------------------------
 
@@ -150,6 +269,7 @@ class ModalTokenFlowProvider(InMemoryOAuthProvider):
                     redirect = await super().authorize(pending.client, pending.params)
                     code = redirect.split("code=", 1)[1].split("&", 1)[0]
                     self._credentials[code] = credentials
+                    await self._persist()
                     pending.redirect_to = redirect
                     logger.info("login completed for workspace %r", workspace)
                     return
@@ -160,9 +280,32 @@ class ModalTokenFlowProvider(InMemoryOAuthProvider):
 
     # -- OAuth overrides --------------------------------------------------
 
+    async def get_client(self, client_id: str):
+        await self._ensure_loaded()
+        return await super().get_client(client_id)
+
+    async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        await self._ensure_loaded()
+        await super().register_client(client_info)
+        await self._persist()
+
+    async def load_authorization_code(self, client, authorization_code: str):
+        await self._ensure_loaded()
+        return await super().load_authorization_code(client, authorization_code)
+
+    async def load_refresh_token(self, client, refresh_token: str):
+        await self._ensure_loaded()
+        return await super().load_refresh_token(client, refresh_token)
+
+    async def revoke_token(self, token) -> None:
+        await self._ensure_loaded()
+        await super().revoke_token(token)
+        await self._persist()
+
     async def authorize(
         self, client: OAuthClientInformationFull, params: AuthorizationParams
     ) -> str:
+        await self._ensure_loaded()
         if client.client_id not in self.clients:
             raise AuthorizeError(
                 error="unauthorized_client",
@@ -187,6 +330,7 @@ class ModalTokenFlowProvider(InMemoryOAuthProvider):
     async def exchange_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code
     ) -> OAuthToken:
+        await self._ensure_loaded()
         credentials = self._credentials.get(authorization_code.code)
         token = await super().exchange_authorization_code(client, authorization_code)
         self._credentials.pop(authorization_code.code, None)
@@ -195,15 +339,18 @@ class ModalTokenFlowProvider(InMemoryOAuthProvider):
             self._credentials[token.access_token] = credentials
             if token.refresh_token:
                 self._credentials[token.refresh_token] = credentials
+        await self._persist()
         return token
 
     async def exchange_refresh_token(self, client, refresh_token, scopes):
+        await self._ensure_loaded()
         credentials = self._credentials.get(getattr(refresh_token, "token", "") or "")
         token = await super().exchange_refresh_token(client, refresh_token, scopes)
         if credentials is not None:
             self._credentials[token.access_token] = credentials
             if token.refresh_token:
                 self._credentials[token.refresh_token] = credentials
+        await self._persist()
         return token
 
     def credentials_for(self, token: str) -> ModalCredentials | None:
@@ -216,6 +363,19 @@ class ModalTokenFlowProvider(InMemoryOAuthProvider):
         Carrying the credentials in the token's claims means tools can reach
         them with `get_access_token()` alone, without a handle on this provider.
         """
+        await self._ensure_loaded()
+        stale = self.access_tokens.get(token)
+        if stale is not None and stale.expires_at is not None and stale.expires_at < time.time():
+            # The stock provider revokes the paired refresh token here too, so a
+            # client that presents its expired access token before refreshing --
+            # the normal order after an idle hour -- would be forced to sign in
+            # again. Drop only the access token and leave refresh working.
+            del self.access_tokens[token]
+            refresh = self._access_to_refresh_map.pop(token, None)
+            if refresh is not None:
+                self._refresh_to_access_map.pop(refresh, None)
+            self._credentials.pop(token, None)
+            return None
         access = await super().load_access_token(token)
         if access is None:
             return None

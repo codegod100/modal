@@ -43,8 +43,12 @@ API** and remain a compatibility dependency of hosted login. This refactor adds
 no internal RPCs to tools; it preserves that existing login flow. Migrating login
 to Modal-issued OAuth client credentials is separate work requiring client setup.
 
-Auth sessions stay in memory and are lost on scaledown; `max_containers=1` keeps
-requests on the same process. `MODAL_MCP_ALLOWED_WORKSPACES` can restrict login.
+Sign-ins are saved to the `modal-mcp-auth-state` Volume and restored when a new
+container starts, so callers stay signed in across scaledown and redeploys. That
+volume holds callers' Modal tokens; anyone who can read it can act as them.
+`max_containers=1` keeps requests on the same process, since pending logins and
+the live token tables are held in memory. `MODAL_MCP_ALLOWED_WORKSPACES` can
+restrict login.
 
 ## Tools
 

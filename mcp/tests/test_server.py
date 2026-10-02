@@ -116,3 +116,16 @@ def test_tools_contain_no_cli_private_rpc_or_local_execution():
                         "stub",
                     }
     assert not hasattr(tools, "modal_cli")
+
+
+def test_state_store_follows_the_deployment_environment(monkeypatch, tmp_path):
+    from modal_mcp import server
+    from modal_mcp.auth import JsonFileStore
+
+    monkeypatch.delenv("MODAL_MCP_STATE_DIR", raising=False)
+    assert server._state_store() is None
+    monkeypatch.setenv("MODAL_MCP_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("MODAL_MCP_STATE_VOLUME", raising=False)
+    store = server._state_store()
+    assert isinstance(store, JsonFileStore)
+    assert store._path == tmp_path / "auth-state.json"

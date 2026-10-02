@@ -68,6 +68,32 @@ def build_mcp(auth=None) -> FastMCP:
     return mcp
 
 
+def _state_store():
+    """Durable sign-in storage, if the deployment provides it.
+
+    MODAL_MCP_STATE_DIR is a directory that outlives the container (a mounted
+    Modal Volume); MODAL_MCP_STATE_VOLUME names that volume so each write is
+    committed right away rather than whenever the container happens to exit.
+    Without the directory, sign-ins live in memory and end with the container.
+    """
+    from .auth import JsonFileStore
+
+    state_dir = os.environ.get("MODAL_MCP_STATE_DIR", "")
+    if not state_dir:
+        return None
+    commit = None
+    volume_name = os.environ.get("MODAL_MCP_STATE_VOLUME", "")
+    if volume_name:
+        import modal
+
+        volume = modal.Volume.from_name(volume_name)
+
+        async def commit():
+            await volume.commit.aio()
+
+    return JsonFileStore(os.path.join(state_dir, "auth-state.json"), commit=commit)
+
+
 def build_asgi_app(base_url: str | None = None):
     """ASGI app for remote serving, authenticated by signing in with Modal.
 
@@ -90,7 +116,9 @@ def build_asgi_app(base_url: str | None = None):
     allowed = [
         w for w in os.environ.get("MODAL_MCP_ALLOWED_WORKSPACES", "").split(",") if w.strip()
     ]
-    auth = ModalTokenFlowProvider(base_url=base_url, allowed_workspaces=allowed)
+    auth = ModalTokenFlowProvider(
+        base_url=base_url, allowed_workspaces=allowed, state_store=_state_store()
+    )
     mcp = build_mcp(auth=auth)
     # Deliberately NOT stateless: stateless mode drops the GET route on /mcp, so
     # a client probing with GET gets a bare 405 with no WWW-Authenticate and
