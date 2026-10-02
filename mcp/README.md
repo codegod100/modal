@@ -58,6 +58,7 @@ restrict login.
 | Apps | `list_apps`, `get_app`, `get_app_logs` | `Environment.apps.list`, `App.lookup`, `App.info`, `App.logs.fetch` |
 | Functions | `get_function_stats`, `call_function`, `spawn_function`, `get_function_call_result`, `cancel_function_call` | `Function.from_name`, stats/remote/spawn, `FunctionCall.from_id`, get/cancel |
 | HTTP services | `deploy_service` | `App.server`, `App.deploy`, `Server.from_name`, `Server.get_url` |
+| Web functions | `deploy_web_function` | `App.function`, `web_server`, `App.deploy`, `Function.from_name`, `Function.get_web_url` |
 | Sandboxes | `create_sandbox`, `sandbox_exec`, `list_sandboxes`, `terminate_sandbox` | `Sandbox.create`, exec/list/from_id/terminate |
 | Storage | `list_volumes`, `list_volume_files`, `read_volume_file`, `list_secrets`, `create_secret`, `list_dicts`, `list_queues` | Object managers, `Volume.iterdir`/read_file, `Secret.update` |
 
@@ -98,6 +99,18 @@ the tool returns its URL and does not create or expose proxy credentials.
 The tool does not accept Python source, import caller modules, upload local source,
 or run a shell command on the MCP host. Private registry credentials and arbitrary
 source-based app deployment are outside this tool's scope.
+
+## Deploy a public website through the API
+
+`deploy_web_function` takes the same inputs as `deploy_service` but deploys a
+`@modal.web_server` function named `web`. Pass `"public": true` to serve the
+endpoint without Modal proxy authentication (the default keeps proxy auth on),
+which is what a website needs. Anyone signed in to this MCP can therefore
+publish public endpoints in their workspace.
+
+`add_python` defaults to `"3.12"`. Set it to `null` for images that already
+ship Python, such as `python:3.12-slim`, where adding a second one fails the
+image build.
 
 ## API limits and changes
 
