@@ -24,6 +24,12 @@ def _positive(value: int, label: str, maximum: int = 10000) -> None:
         raise ValueError(f"{label} must be between 1 and {maximum}")
 
 
+def _gpu(gpu: str | None) -> None:
+    # Modal validates the type name at deploy time; reject only blank strings here.
+    if gpu is not None and not gpu.strip():
+        raise ValueError("gpu must be a GPU type such as 'L4' or 'H100:2', or null for CPU")
+
+
 def _parse_payload(raw: str | None, label: str) -> Any:
     if raw is None or not raw.strip():
         return None
@@ -254,12 +260,14 @@ async def deploy_service(
     min_containers: int = 0,
     max_containers: int = 1,
     startup_timeout_seconds: int = 60,
+    gpu: str | None = None,
 ) -> dict:
     """Create or update a named HTTP service via App.server and App.deploy.
 
     The public registry image must contain the service and its dependencies.
     argv runs only inside the service container, which must listen on
-    0.0.0.0:port. The endpoint requires Modal proxy authentication. This tool
+    0.0.0.0:port. gpu attaches a GPU to each container (e.g. "L4", "A100",
+    "H100:2"). The endpoint requires Modal proxy authentication. This tool
     accepts no Python source, host file path, or shell command string.
     Deploying the same app name replaces its previous definition.
     """
@@ -278,6 +286,7 @@ async def deploy_service(
     _positive(startup_timeout_seconds, "startup_timeout_seconds", 3600)
     if cpu <= 0 or not 0 <= min_containers <= max_containers:
         raise ValueError("cpu must be positive and 0 <= min_containers <= max_containers")
+    _gpu(gpu)
     async with client_session() as client:
         env = await environment_name(client, environment)
         definition = service_app(
@@ -290,6 +299,7 @@ async def deploy_service(
             min_containers,
             max_containers,
             startup_timeout_seconds,
+            gpu,
         )
         await definition.deploy.aio(environment_name=env, client=client)
         server = modal.Server.from_name(app, "service", environment_name=env, client=client)
@@ -317,6 +327,7 @@ async def deploy_web_function(
     min_containers: int = 0,
     max_containers: int = 1,
     startup_timeout_seconds: int = 60,
+    gpu: str | None = None,
 ) -> dict:
     """Create or update a named HTTP service as a Modal web function.
 
@@ -325,7 +336,8 @@ async def deploy_web_function(
     e.g. for a website. The registry image must contain the service; argv runs
     only in the deployed container and must listen on 0.0.0.0:port. Set
     add_python to null for images that already ship Python (e.g.
-    python:3.12-slim), where adding another fails the image build. Deploying
+    python:3.12-slim), where adding another fails the image build. gpu attaches
+    a GPU to each container (e.g. "L4", "A100", "H100:2"). Deploying
     the same app name replaces its previous definition.
     """
     require_write()
@@ -343,6 +355,7 @@ async def deploy_web_function(
     _positive(startup_timeout_seconds, "startup_timeout_seconds", 3600)
     if cpu <= 0 or not 0 <= min_containers <= max_containers:
         raise ValueError("cpu must be positive and 0 <= min_containers <= max_containers")
+    _gpu(gpu)
     async with client_session() as client:
         env = await environment_name(client, environment)
         definition = web_function_app(
@@ -357,6 +370,7 @@ async def deploy_web_function(
             startup_timeout_seconds,
             public,
             add_python,
+            gpu,
         )
         await definition.deploy.aio(environment_name=env, client=client)
         function = modal.Function.from_name(app, "web", environment_name=env, client=client)

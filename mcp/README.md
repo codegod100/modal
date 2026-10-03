@@ -85,7 +85,8 @@ Call `deploy_service` with structured arguments, for example:
   "memory_mb": 512,
   "min_containers": 0,
   "max_containers": 1,
-  "startup_timeout_seconds": 60
+  "startup_timeout_seconds": 60,
+  "gpu": null
 }
 ```
 
@@ -95,6 +96,12 @@ image; Python 3.12 is added for Modal's runtime. The argv command starts only in
 the service container, through a serialized `@modal.enter()` hook. It must bind
 `0.0.0.0` on the declared port. The endpoint requires Modal proxy authentication;
 the tool returns its URL and does not create or expose proxy credentials.
+
+`gpu` attaches a GPU to every container, using Modal's GPU type names such as
+`"T4"`, `"L4"`, `"A100"`, `"H100"` or `"H100:2"` for several. Leave it `null`
+(the default) for CPU-only. Modal validates the name when the app deploys. The
+image must carry its own GPU userland (CUDA libraries, frameworks), since Modal
+provides only the driver.
 
 The tool does not accept Python source, import caller modules, upload local source,
 or run a shell command on the MCP host. Private registry credentials and arbitrary
@@ -110,7 +117,7 @@ publish public endpoints in their workspace.
 
 `add_python` defaults to `"3.12"`. Set it to `null` for images that already
 ship Python, such as `python:3.12-slim`, where adding a second one fails the
-image build.
+image build. `gpu` works the same way as for `deploy_service`.
 
 ## API limits and changes
 
