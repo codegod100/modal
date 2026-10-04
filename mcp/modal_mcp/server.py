@@ -24,7 +24,8 @@ Deploy an HTTP service with deploy_service using a container image, argv and
 port. This creates or updates the named app and requires Modal proxy auth for
 its endpoint. deploy_web_function takes the same inputs and deploys a web
 function instead; with public=true its endpoint needs no proxy auth, so use it
-for websites. Neither accepts Python source or executes commands locally.
+for websites. Both take an optional gpu (e.g. "L4", "H100:2") to run each
+container on a GPU. Neither accepts Python source or executes commands locally.
 Sandbox commands run inside the selected sandbox through the SDK.
 """
 

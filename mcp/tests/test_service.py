@@ -28,7 +28,7 @@ async def test_typed_deployment_uses_sdk_caller_client_and_proxy_auth(sdk, monke
         max_containers=2,
     )
     build.assert_called_once_with(
-        "example", "public/image", ["server", "--port", "8080"], 8080, 2, 1024, 1, 2, 60
+        "example", "public/image", ["server", "--port", "8080"], 8080, 2, 1024, 1, 2, 60, None
     )
     definition.deploy.aio.assert_awaited_once_with(environment_name="dev", client=sdk.client)
     lookup.assert_called_once_with("example", "service", environment_name="dev", client=sdk.client)
@@ -58,6 +58,7 @@ async def test_typed_deployment_uses_sdk_caller_client_and_proxy_auth(sdk, monke
         {"startup_timeout_seconds": 0},
         {"app": ""},
         {"image": ""},
+        {"gpu": " "},
     ],
 )
 async def test_invalid_service_request_fails_before_sdk(sdk, changes):
@@ -102,6 +103,7 @@ def test_service_definition_uses_only_typed_serialized_remote_hooks(monkeypatch)
         "port": 8080,
         "cpu": 1,
         "memory": 512,
+        "gpu": None,
         "min_containers": 0,
         "max_containers": 1,
         "startup_timeout": 60,
@@ -166,6 +168,7 @@ async def test_web_function_deployment_returns_public_url(sdk, monkeypatch):
         60,
         True,
         None,
+        None,
     )
     definition.deploy.aio.assert_awaited_once_with(environment_name="dev", client=sdk.client)
     lookup.assert_called_once_with("site", "web", environment_name="dev", client=sdk.client)
@@ -186,8 +189,32 @@ async def test_web_function_defaults_to_proxy_auth(sdk, monkeypatch):
     function = NS(object_id="fu-web", get_web_url=NS(aio=AsyncMock(return_value="https://x")))
     monkeypatch.setattr(modal.Function, "from_name", Mock(return_value=function))
     result = await tools.deploy_web_function("site", "img", ["server"], 8000)
-    assert build.call_args.args[-2:] == (False, "3.12")
+    assert build.call_args.args[-3:] == (False, "3.12", None)
     assert result["requires_proxy_auth"] is True
+
+
+@pytest.mark.parametrize("deploy", ["deploy_service", "deploy_web_function"])
+async def test_gpu_is_passed_to_definition(sdk, monkeypatch, deploy):
+    definition = NS(app_id="ap-gpu", deploy=NS(aio=AsyncMock()))
+    builder = "service_app" if deploy == "deploy_service" else "web_function_app"
+    build = Mock(return_value=definition)
+    monkeypatch.setattr(tools, builder, build)
+    url = NS(aio=AsyncMock(return_value="https://gpu.modal.run"))
+    handle = NS(object_id="fu-gpu", get_url=url, get_web_url=url)
+    monkeypatch.setattr(modal.Server, "from_name", Mock(return_value=handle))
+    monkeypatch.setattr(modal.Function, "from_name", Mock(return_value=handle))
+    await getattr(tools, deploy)("gpu-app", "img", ["server"], 8000, gpu="L4")
+    assert build.call_args.args[-1] == "L4"
+
+
+def test_real_sdk_accepts_gpu_definitions_without_network():
+    service = _service.service_app(
+        "gpu-service", "python:3.12-slim", ["server"], 8080, 1, 512, 0, 1, 60, "L4"
+    )
+    web = _service.web_function_app(
+        "gpu-web", "python:3.12-slim", ["server"], 8080, 1, 512, 0, 1, 60, False, None, "H100:2"
+    )
+    assert service.app_id is None and web.app_id is None
 
 
 async def test_invalid_web_function_request_fails_before_sdk(sdk):
@@ -237,6 +264,7 @@ def test_web_function_definition_runs_argv_only_remotely(monkeypatch, public):
         "name": "web",
         "cpu": 1,
         "memory": 512,
+        "gpu": None,
         "min_containers": 0,
         "max_containers": 1,
         "serialized": True,

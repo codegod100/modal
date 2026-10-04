@@ -13,6 +13,7 @@ def service_app(
     min_containers: int,
     max_containers: int,
     startup_timeout_seconds: int,
+    gpu: str | None = None,
 ):
     app = modal.App(name)
     command = list(argv)
@@ -23,6 +24,7 @@ def service_app(
         port=port,
         cpu=cpu,
         memory=memory_mb,
+        gpu=gpu,
         min_containers=min_containers,
         max_containers=max_containers,
         startup_timeout=startup_timeout_seconds,
@@ -58,6 +60,7 @@ def web_function_app(
     startup_timeout_seconds: int,
     public: bool,
     add_python: str | None,
+    gpu: str | None = None,
 ):
     """A web_server function; unlike App.server it can serve without proxy auth."""
     app = modal.App(name)
@@ -68,6 +71,7 @@ def web_function_app(
         name="web",
         cpu=cpu,
         memory=memory_mb,
+        gpu=gpu,
         min_containers=min_containers,
         max_containers=max_containers,
         serialized=True,
