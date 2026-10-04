@@ -1,0 +1,58 @@
+site_name: modal
+site_description: A Modal MCP server, nix-ready Modal images, and the workarounds they needed.
+site_url: https://codegod100.github.io/modal/
+repo_url: https://github.com/codegod100/modal
+repo_name: codegod100/modal
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: green
+      accent: green
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: green
+      accent: green
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - search.highlight
+
+nav:
+  - Home: index.md
+  - MCP server:
+      - Overview: mcp/index.md
+      - Connect: mcp/connect.md
+      - Deploy: mcp/deploy.md
+      - Tools: mcp/tools.md
+      - Deploying HTTP services: mcp/services.md
+      - Limits and testing: mcp/limits.md
+  - Containers:
+      - Overview: containers/index.md
+      - container.toml reference: containers/spec.md
+  - Nix on Modal: nix.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.inlinehilite

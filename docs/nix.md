@@ -1,17 +1,6 @@
-# modal
+# Nix on Modal
 
-Modal images and the workarounds they needed.
-
-Docs: https://codegod100.github.io/modal/
-
-## `mcp/` -- MCP server for Modal
-
-An MCP server for apps, functions, logs, sandboxes, storage, billing, and typed
-HTTP service deployment through the public Modal Python SDK. Runs over stdio
-with a local profile or over HTTP with caller-scoped Modal authentication.
-See [mcp/README.md](mcp/README.md).
-
-## `arch_nix.py` -- Arch Linux + nix
+## `arch_nix.py`: Arch Linux + nix
 
     modal run arch_nix.py          # verifies nix, publishes arch-nix:latest
 
@@ -37,7 +26,7 @@ in a gigabyte of unrelated `rustc`. Name what you need instead.
 `run_commands` and `run_function` both take `volumes=`, so a build step can
 mount one. Only the final container filesystem is snapshotted.
 
-## Nix cannot build derivations on Modal
+## Nix cannot build derivations under gVisor
 
 Substitution works fine. Building anything -- including the trivial
 `mkShell` env derivation that `nix develop` needs -- fails:
@@ -108,95 +97,12 @@ So for anything built on Functions -- which is everything in `containers/` --
 gVisor is mandatory and the shim is permanent. A Sandbox-backed container
 would be the way to escape it, at the cost of no GPUs, static memory, and a
 512 GiB image cap.
+
 ### Alternatives still not tried
 
 * Older nix wrote the handshake down a plain pipe rather than a pty. Arch ships
   2.35.2. Installing 2.24/2.28 from the Arch archive failed on
   `libboost_context` and `liblowdown` version pins.
-
-## `containers/` -- one directory per container
-
-    scripts/new-container NAME      # scaffold a new one
-    scripts/deploy NAME             # build + run it once
-    scripts/deploy NAME -c 'CMD'    # override [run] command for one run
-    scripts/deploy --list           # what is here
-
-Both resolve the repo through their own symlink, so they can live on PATH:
-
-    ln -s "$PWD/scripts/new-container" ~/.local/bin/new-container
-    ln -s "$PWD/scripts/deploy"        ~/.local/bin/modal-deploy
-
-`.claude/skills/modal-containers/` documents the whole workflow for Claude.
-
-Each container is a directory holding a `container.toml`, and that file is the
-whole definition -- base image, resources, what to run, whether there is a nix
-devShell. `containers/_loader.py` turns it into a `modal.Image` and a
-`modal.App`; `container.py` is a fixed stub that wires the two together and is
-not meant to be edited. `containers/spec.md` documents every key.
-
-Modal itself has no such convention -- `modal bootstrap` only stamps out three
-fixed ML demos -- so this is local to this repo.
-
-`containers/hello` is the worked example: the `arch-nix` image, a devShell with
-`hello`, `jq`, `ripgrep`, `git` and `python3`, and an app that prints where each
-of those resolved. It runs as a Sandbox on a real VM.
-
-    hello from the devShell
-    python   3.14.7 at /nix/store/d64q19q1...-python3-3.14.7/bin/python3
-    host     modal (x86_64)
-    devshell impure
-      hello    /nix/store/xl1h9i29...-hello-2.12.3/bin/hello
-
-### Layer order is the whole performance story
-
-The devShell is warmed at build time -- `nix develop --command true` -- so its
-store paths bake into the image and a container starts straight into the app.
-Everything in that closure is binary-cached, so it is a one-time download, but
-only if the layer survives.
-
-It survives because `_loader.py` copies **flake.nix and flake.lock, warms, and
-only then copies the source**. Copy the source first and every edit to any file
-invalidates the warm, and the whole closure is fetched again on every build.
-Measured on `hello`, whose shell is ~3000 store paths:
-
-| build | result |
-|---|---|
-| cold, or `flake.nix` changed | 55s warm step |
-| source edited, flake untouched | warm cached; `COPY . /` only, 6s |
-| nothing changed | no build at all, 18s end to end |
-
-`git` alone is 87 paths and 404MB, `python3` another 23 and 220MB. That is a
-reason to get the layer order right, not a reason to keep them out of the
-shell.
-
-### The container re-imports everything
-
-Modal re-imports the entrypoint inside the container, at `/root`, which gets
-none of the workdir copies. So `_loader.py` ships three things there
-explicitly: itself via `add_local_python_source`, the `container.toml` it
-reads, and -- since none of the local tree exists out there -- a `MODAL_TASK_ID`
-check that skips validation and image-building on the remote pass.
-
-### Sandboxes get the VM
-
-`containers/hello` is a sandbox container -- `runtime = "sandbox"` -- so it
-runs on a real VM. Verified: kernel `6.12.8+`, and `nix build` works there
-with no `LD_PRELOAD` at all.
-
-    scripts/deploy hello
-    scripts/deploy hello -c 'cat /proc/version'
-
-The image is still built under gVisor, so `[nix] shim` stays on for the build
-and is dropped from the run-time command. For a build that should run and then
-exit, a sandbox is the better fit than a function: the command is the
-sandbox's own process, so it dies when the build does.
-
-### `[nix] shim`
-
-Warming a devShell means *building* `nix-shell-env`, which is exactly the gVisor
-pty bug above. `[nix] flake = true` therefore requires `shim = true`, and the
-loader refuses the combination up front rather than failing ten minutes into a
-build.
 
 ## Other notes
 
