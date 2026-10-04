@@ -9,9 +9,8 @@ endpoint: a guestbook where every room is its own Durable Object (a celld
 
 Then open the printed URL, or:
 
-    curl -X POST https://<workspace>--celld-example-serve.modal.run/rooms/lobby \
-      -d '{"text":"hello"}'
-    curl https://<workspace>--celld-example-serve.modal.run/rooms/lobby
+    curl -X POST $URL/rooms/lobby -d '{"text":"hello"}'
+    curl $URL/rooms/lobby
 
 ## Layout
 
@@ -26,16 +25,24 @@ a laptop, and `wrangler deploy` would run it on Cloudflare.
 
 ## How it runs
 
-One container runs one celld node in `celld dev` mode, which keeps its object
-store and every cell's SQLite file under the project's `.celld/dev`. On Modal that
-directory is the `celld-example-state` Volume, so rooms survive a container
-restart. `max_containers=1` is deliberate: two containers would be two nodes
-writing the same files.
+One container runs one celld node in `celld dev` mode on local disk. A single
+node acknowledges a write only once it is in its object store,
+`.celld/dev/objects.sqlite3`, and that one file is enough to bring every cell
+back. So `app.py` keeps a copy of it on the `celld-example-state` Volume:
 
-Verified on Modal: celld 0.6.1 runs under gVisor as-is (no shim, no VM), the
-image recipe in `app.py` builds, and a restarted node reads its cells back from
-its state directory on local disk. That directory living on a Volume is the one
-part not yet exercised.
+* restored into place when a container starts,
+* snapshotted with SQLite's backup API every 5 seconds while anything changed,
+* snapshotted once more after a clean shutdown when the container scales down.
+
+A crash can lose at most the last 5 seconds. SQLite never runs on the Volume
+itself; each snapshot is written to local disk and then copied over.
+`max_containers=1` is deliberate: two containers would be two nodes restoring
+the same snapshot and overwriting each other's.
+
+Verified on Modal: celld 0.6.1 runs under gVisor as-is (no shim, no VM), and
+the image recipe builds. The snapshot and restore code was exercised against a
+real celld with the Volume stubbed out by a local directory: a kill without
+shutdown, a restore, a clean stop and a second restore kept every message.
 
 ## Going past one node
 
