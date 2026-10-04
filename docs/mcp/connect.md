@@ -53,5 +53,5 @@ constructed explicitly from the selected profile's credentials.
 ## Read-only mode
 
 Set `MODAL_MCP_READ_ONLY=1` (also `true` or `yes`) to register only the
-[14 read tools](tools.md#read-tools). Write implementations also enforce the
+[read tools](tools.md#read-tools). Write implementations also enforce the
 policy if called directly.

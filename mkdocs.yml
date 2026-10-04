@@ -36,12 +36,15 @@ nav:
       - Connect: mcp/connect.md
       - Deploy: mcp/deploy.md
       - Tools: mcp/tools.md
-      - Deploying HTTP services: mcp/services.md
+      - Deploying services and jobs: mcp/services.md
       - Limits and testing: mcp/limits.md
   - Containers:
       - Overview: containers/index.md
       - container.toml reference: containers/spec.md
   - Nix on Modal: nix.md
+
+hooks:
+  - docs_hooks/tools_ref.py
 
 markdown_extensions:
   - admonition

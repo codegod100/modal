@@ -1,7 +1,7 @@
-# Deploying HTTP services
+# Deploying services and jobs
 
-Two write tools deploy a container image as an HTTP endpoint without uploading
-any Python source.
+Three write tools deploy a container image without uploading any Python
+source: two as HTTP endpoints, one as a plain function you call through the SDK.
 
 ## `deploy_service`
 
@@ -51,3 +51,21 @@ publish public endpoints in their workspace.
 `add_python` defaults to `"3.12"`. Set it to `null` for images that already
 ship Python, such as `python:3.12-slim`, where adding a second one fails the
 image build. `gpu` works the same way as for `deploy_service`.
+
+## `deploy_command_function` for GPU and batch jobs
+
+`deploy_command_function` deploys a function named `run` with no HTTP endpoint,
+so no proxy token is involved. Call it with `call_function` (or
+`spawn_function`), which uses the caller's own Modal credentials:
+
+```json
+{"app": "my-job", "function": "run",
+ "kwargs": "{\"argv\": [\"/app/render\", \"out.png\"], \"output_file\": \"out.png\"}"}
+```
+
+`setup_argv` runs once per container before its first call, for installs and
+builds. Each call returns `returncode`, `stdout`, `stderr` and, when
+`output_file` exists after a successful run, its bytes as `output_base64`.
+`gpu`, `cpu`, `memory_mb` and `timeout_seconds` (setup plus one call) size the
+container. Like `sandbox_exec`, this lets any signed-in caller run commands in
+containers in their own workspace; nothing runs on the MCP host.
