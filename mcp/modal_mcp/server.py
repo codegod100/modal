@@ -25,7 +25,10 @@ port. This creates or updates the named app and requires Modal proxy auth for
 its endpoint. deploy_web_function takes the same inputs and deploys a web
 function instead; with public=true its endpoint needs no proxy auth, so use it
 for websites. Both take an optional gpu (e.g. "L4", "H100:2") to run each
-container on a GPU. Neither accepts Python source or executes commands locally.
+container on a GPU. For GPU or batch work without an HTTP endpoint, use
+deploy_command_function: it deploys a function named run that executes argv per
+call, invoked with call_function under the caller's own credentials (no proxy
+token). None of them accepts Python source or executes commands locally.
 Sandbox commands run inside the selected sandbox through the SDK.
 """
 
@@ -59,6 +62,7 @@ WRITE_TOOLS = [
     tools.create_secret,
     tools.deploy_service,
     tools.deploy_web_function,
+    tools.deploy_command_function,
 ]
 
 

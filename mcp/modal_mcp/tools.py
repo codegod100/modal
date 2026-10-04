@@ -16,7 +16,7 @@ import modal
 from modal.exception import TimeoutError as ModalTimeoutError
 
 from ._sdk import client_session, environment_name, json_value, require_write
-from ._service import service_app, web_function_app
+from ._service import command_function_app, service_app, web_function_app
 
 
 def _positive(value: int, label: str, maximum: int = 10000) -> None:
@@ -382,6 +382,74 @@ async def deploy_web_function(
             "function_id": function.object_id,
             "url": url,
             "requires_proxy_auth": not public,
+        }
+
+
+def _argv(argv: Any, label: str) -> None:
+    if (
+        not isinstance(argv, list)
+        or not argv
+        or any(not isinstance(arg, str) or not arg or "\x00" in arg for arg in argv)
+    ):
+        raise ValueError(f"{label} must be a non-empty array of non-empty command arguments")
+
+
+async def deploy_command_function(
+    app: str,
+    image: str,
+    setup_argv: list[str] | None = None,
+    gpu: str | None = None,
+    add_python: str | None = "3.12",
+    environment: str | None = None,
+    cpu: float = 1.0,
+    memory_mb: int = 512,
+    min_containers: int = 0,
+    max_containers: int = 1,
+    timeout_seconds: int = 600,
+) -> dict:
+    """Create or update a function named run that executes a command per call.
+
+    There is no HTTP endpoint: invoke it with call_function or spawn_function
+    (function "run", kwargs {"argv": [...], "output_file": path}), which use the
+    caller's own Modal credentials. setup_argv runs once per container before
+    its first call (installs, builds). Each call returns returncode, stdout,
+    stderr and, when output_file exists, its bytes as output_base64. gpu
+    attaches a GPU (e.g. "L4", "H100:2"); timeout_seconds covers setup plus one
+    call. Commands run only in the deployed container, never on the MCP host.
+    Deploying the same app name replaces its previous definition.
+    """
+    require_write()
+    if not app.strip() or not image.strip():
+        raise ValueError("app and image must not be empty")
+    if setup_argv is not None:
+        _argv(setup_argv, "setup_argv")
+    _positive(memory_mb, "memory_mb", 1_000_000)
+    _positive(max_containers, "max_containers", 1000)
+    _positive(timeout_seconds, "timeout_seconds", 86400)
+    if cpu <= 0 or not 0 <= min_containers <= max_containers:
+        raise ValueError("cpu must be positive and 0 <= min_containers <= max_containers")
+    _gpu(gpu)
+    async with client_session() as client:
+        env = await environment_name(client, environment)
+        definition = command_function_app(
+            app,
+            image,
+            setup_argv,
+            cpu,
+            memory_mb,
+            gpu,
+            min_containers,
+            max_containers,
+            timeout_seconds,
+            add_python,
+        )
+        await definition.deploy.aio(environment_name=env, client=client)
+        return {
+            "app": app,
+            "app_id": definition.app_id,
+            "environment": env,
+            "function": "run",
+            "hint": 'Call with call_function(app, "run", kwargs={"argv": [...]}).',
         }
 
 

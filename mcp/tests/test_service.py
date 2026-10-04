@@ -290,3 +290,89 @@ def test_real_sdk_accepts_web_function_definition_without_network():
         None,
     )
     assert app.name == "offline-site" and app.app_id is None
+
+
+async def test_command_function_deploys_with_gpu_and_setup(sdk, monkeypatch):
+    definition = NS(app_id="ap-cmd", deploy=NS(aio=AsyncMock()))
+    build = Mock(return_value=definition)
+    monkeypatch.setattr(tools, "command_function_app", build)
+    result = await tools.deploy_command_function(
+        "job", "python:3.12-slim", ["make"], gpu="L4", add_python=None, environment="dev"
+    )
+    build.assert_called_once_with(
+        "job", "python:3.12-slim", ["make"], 1.0, 512, "L4", 0, 1, 600, None
+    )
+    definition.deploy.aio.assert_awaited_once_with(environment_name="dev", client=sdk.client)
+    assert result["app_id"] == "ap-cmd" and result["function"] == "run"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"setup_argv": []},
+        {"setup_argv": [""]},
+        {"gpu": ""},
+        {"timeout_seconds": 0},
+        {"cpu": 0},
+        {"image": ""},
+    ],
+)
+async def test_invalid_command_function_request_fails_before_sdk(sdk, changes):
+    params = {"app": "job", "image": "img"}
+    params.update(changes)
+    with pytest.raises(ValueError):
+        await tools.deploy_command_function(**params)
+    sdk.factory.assert_not_called()
+
+
+def test_command_function_runs_setup_once_and_returns_output(monkeypatch, tmp_path):
+    captured = {}
+    app = NS()
+
+    def register(**kwargs):
+        captured["options"] = kwargs
+
+        def decorator(fn):
+            captured["fn"] = fn
+            return fn
+
+        return decorator
+
+    app.function = register
+    monkeypatch.setattr(modal, "App", Mock(return_value=app))
+    monkeypatch.setattr(modal.Image, "from_registry", Mock(return_value="image"))
+    import os
+    import subprocess
+
+    real_exists = os.path.exists
+    marker = tmp_path / "marker"
+    monkeypatch.setattr(
+        os.path,
+        "exists",
+        lambda p: real_exists(marker) if p == "/tmp/.modal-mcp-setup-done" else real_exists(p),
+    )
+    real_open = open
+
+    def fake_open(p, *a, **k):
+        return real_open(marker if p == "/tmp/.modal-mcp-setup-done" else p, *a, **k)
+
+    monkeypatch.setattr("builtins.open", fake_open)
+    run = Mock(return_value=NS(returncode=0, stdout="hi", stderr=""))
+    monkeypatch.setattr(subprocess, "run", run)
+    _service.command_function_app("job", "img", ["setup"], 1, 512, "L4", 0, 1, 600, None)
+    assert captured["options"]["gpu"] == "L4" and captured["options"]["name"] == "run"
+    run.assert_not_called()  # nothing executes at definition time
+    out = tmp_path / "out.bin"
+    out.write_bytes(b"\x01\x02")
+    first = captured["fn"](["work"], output_file=str(out))
+    second = captured["fn"](["work"])
+    assert [c.args[0] for c in run.call_args_list] == [["setup"], ["work"], ["work"]]
+    assert first["output_base64"] == "AQI=" and first["stdout"] == "hi"
+    assert "output_base64" not in second
+
+
+def test_real_sdk_accepts_command_function_without_network():
+    app = _service.command_function_app(
+        "offline-job", "python:3.12-slim", None, 1, 512, "L4", 0, 1, 600, None
+    )
+    assert app.name == "offline-job" and app.app_id is None
