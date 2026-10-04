@@ -1,6 +1,6 @@
 ---
 name: modal-containers
-description: Create, configure, run and debug Modal containers in the nandithebull/modal repo, where each container is a directory under containers/ defined by a container.toml. Use when the user wants to make a new Modal container, run or deploy an existing one, choose between a Sandbox and a Function, put a nix devShell in a container, speed up a slow Modal image build, or understand why nix cannot build derivations under gVisor. Triggers include "new container", "new-container", "modal-deploy", "container.toml", "run this on Modal", "build this in the cloud", "sandbox vs function", "vm_runtime", and the errors "unexpected EOF reading a line", "Unknown experimental option", and "MODAL_FUNCTION_RUNTIME must be set to 'gvisor'".
+description: Create, configure, run and debug Modal containers in the codegod100/modal repo, where each container is a directory under containers/ defined by a container.toml. Use when the user wants to make a new Modal container, run or deploy an existing one, choose between a Sandbox and a Function, put a nix devShell in a container, speed up a slow Modal image build, or understand why nix cannot build derivations under gVisor. Triggers include "new container", "new-container", "modal-deploy", "container.toml", "run this on Modal", "build this in the cloud", "sandbox vs function", "vm_runtime", and the errors "unexpected EOF reading a line", "Unknown experimental option", and "MODAL_FUNCTION_RUNTIME must be set to 'gvisor'".
 ---
 
 # Modal containers
