@@ -28,7 +28,11 @@ for websites. Both take an optional gpu (e.g. "L4", "H100:2") to run each
 container on a GPU. For GPU or batch work without an HTTP endpoint, use
 deploy_command_function: it deploys a function named run that executes argv per
 call, invoked with call_function under the caller's own credentials (no proxy
-token). None of them accepts Python source or executes commands locally.
+token). All three take volumes ({mount path: Volume name}, created if missing),
+secrets (Secret names exposed as environment variables) and image_commands
+(shell commands run on Modal during the image build, e.g. to compile a service
+that has no registry image). None of them accepts Python source or executes
+commands locally.
 Sandbox commands run inside the selected sandbox through the SDK.
 """
 

@@ -108,6 +108,38 @@ The tool does not accept Python source, import caller modules, upload local sour
 or run a shell command on the MCP host. Private registry credentials and arbitrary
 source-based app deployment are outside this tool's scope.
 
+## Volumes, secrets and build steps
+
+`deploy_service`, `deploy_web_function` and `deploy_command_function` also take:
+
+- `volumes`: `{"/data": "my-volume"}` mounts a Volume at an absolute path,
+  creating it if missing. Use `max_containers: 1` for services that need a
+  single owner of their data directory.
+- `secrets`: `["my-secret"]` exposes each Secret's keys as environment
+  variables. Create them with `create_secret`.
+- `image_commands`: shell commands run on Modal while building the image, after
+  the registry image (and `add_python`). Use them to install or compile a service
+  that has no registry image. They never run on the MCP host.
+
+Names resolve in the environment the app deploys to. For example, an S3 store:
+
+```json
+{
+  "app": "minio",
+  "image": "debian:bookworm-slim",
+  "image_commands": [
+    "apt-get update && apt-get install -y curl git ca-certificates",
+    "curl -fsSL https://go.dev/dl/go1.24.8.linux-amd64.tar.gz | tar -C /usr/local -xz && git clone -q --depth 1 -b RELEASE.2025-10-15T17-29-55Z https://github.com/minio/minio /src && cd /src && CGO_ENABLED=0 /usr/local/go/bin/go build -trimpath -o /usr/local/bin/minio . && rm -rf /src /usr/local/go /root/go /root/.cache"
+  ],
+  "argv": ["minio", "server", "/data", "--address", "0.0.0.0:9000"],
+  "port": 9000,
+  "public": true,
+  "volumes": {"/data": "minio-data"},
+  "secrets": ["minio-root"],
+  "max_containers": 1
+}
+```
+
 ## Deploy a public website through the API
 
 `deploy_web_function` takes the same inputs as `deploy_service` but deploys a

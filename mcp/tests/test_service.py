@@ -28,7 +28,17 @@ async def test_typed_deployment_uses_sdk_caller_client_and_proxy_auth(sdk, monke
         max_containers=2,
     )
     build.assert_called_once_with(
-        "example", "public/image", ["server", "--port", "8080"], 8080, 2, 1024, 1, 2, 60, None
+        "example",
+        "public/image",
+        ["server", "--port", "8080"],
+        8080,
+        2,
+        1024,
+        1,
+        2,
+        60,
+        None,
+        attach=None,
     )
     definition.deploy.aio.assert_awaited_once_with(environment_name="dev", client=sdk.client)
     lookup.assert_called_once_with("example", "service", environment_name="dev", client=sdk.client)
@@ -169,6 +179,7 @@ async def test_web_function_deployment_returns_public_url(sdk, monkeypatch):
         True,
         None,
         None,
+        attach=None,
     )
     definition.deploy.aio.assert_awaited_once_with(environment_name="dev", client=sdk.client)
     lookup.assert_called_once_with("site", "web", environment_name="dev", client=sdk.client)
@@ -300,7 +311,7 @@ async def test_command_function_deploys_with_gpu_and_setup(sdk, monkeypatch):
         "job", "python:3.12-slim", ["make"], gpu="L4", add_python=None, environment="dev"
     )
     build.assert_called_once_with(
-        "job", "python:3.12-slim", ["make"], 1.0, 512, "L4", 0, 1, 600, None
+        "job", "python:3.12-slim", ["make"], 1.0, 512, "L4", 0, 1, 600, None, attach=None
     )
     definition.deploy.aio.assert_awaited_once_with(environment_name="dev", client=sdk.client)
     assert result["app_id"] == "ap-cmd" and result["function"] == "run"
@@ -376,3 +387,94 @@ def test_real_sdk_accepts_command_function_without_network():
         "offline-job", "python:3.12-slim", None, 1, 512, "L4", 0, 1, 600, None
     )
     assert app.name == "offline-job" and app.app_id is None
+
+
+@pytest.mark.parametrize(
+    ("deploy", "builder"),
+    [
+        ("deploy_service", "service_app"),
+        ("deploy_web_function", "web_function_app"),
+        ("deploy_command_function", "command_function_app"),
+    ],
+)
+async def test_volumes_secrets_and_build_steps_reach_definition(sdk, monkeypatch, deploy, builder):
+    definition = NS(app_id="ap-x", deploy=NS(aio=AsyncMock()))
+    build = Mock(return_value=definition)
+    monkeypatch.setattr(tools, builder, build)
+    url = NS(aio=AsyncMock(return_value="https://x.modal.run"))
+    handle = NS(object_id="fu-x", get_url=url, get_web_url=url)
+    monkeypatch.setattr(modal.Server, "from_name", Mock(return_value=handle))
+    monkeypatch.setattr(modal.Function, "from_name", Mock(return_value=handle))
+    extra = {
+        "volumes": {"/data": "store"},
+        "secrets": ["creds"],
+        "image_commands": ["make install"],
+    }
+    if deploy == "deploy_command_function":
+        await tools.deploy_command_function("app", "img", **extra)
+    else:
+        await getattr(tools, deploy)("app", "img", ["server"], 9000, **extra)
+    assert build.call_args.kwargs["attach"] == _service.Attachments(
+        {"/data": "store"}, ("creds",), ("make install",)
+    )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"volumes": {"data": "store"}},
+        {"volumes": {"/": "store"}},
+        {"volumes": {"/data/../etc": "store"}},
+        {"volumes": {"/data": ""}},
+        {"volumes": ["/data"]},
+        {"secrets": "creds"},
+        {"secrets": [""]},
+        {"image_commands": [" "]},
+        {"image_commands": "make"},
+    ],
+)
+async def test_invalid_attachments_fail_before_sdk(sdk, changes):
+    with pytest.raises(ValueError):
+        await tools.deploy_web_function("site", "img", ["server"], 8000, **changes)
+    sdk.factory.assert_not_called()
+
+
+def test_web_function_definition_mounts_volumes_secrets_and_build_steps(monkeypatch):
+    captured = {}
+    app = NS(function=lambda **kw: captured.update(options=kw) or (lambda fn: fn))
+    monkeypatch.setattr(modal, "App", Mock(return_value=app))
+    built = object()
+    base = NS(run_commands=Mock(return_value=built))
+    monkeypatch.setattr(modal.Image, "from_registry", Mock(return_value=base))
+    volume, secret = object(), object()
+    volume_lookup = Mock(return_value=volume)
+    secret_lookup = Mock(return_value=secret)
+    monkeypatch.setattr(modal.Volume, "from_name", volume_lookup)
+    monkeypatch.setattr(modal.Secret, "from_name", secret_lookup)
+    monkeypatch.setattr(modal, "web_server", lambda port, **kw: lambda fn: fn)
+    attach = _service.Attachments({"/data": "store"}, ("creds",), ("a", "b"))
+    _service.web_function_app(
+        "site", "img", ["server"], 9000, 1, 512, 0, 1, 60, True, None, attach=attach
+    )
+    base.run_commands.assert_called_once_with("a", "b")
+    volume_lookup.assert_called_once_with("store", create_if_missing=True)
+    secret_lookup.assert_called_once_with("creds")
+    assert captured["options"]["image"] is built
+    assert captured["options"]["volumes"] == {"/data": volume}
+    assert captured["options"]["secrets"] == [secret]
+
+
+def test_real_sdk_accepts_attachments_without_network():
+    attach = _service.Attachments({"/data": "store"}, ("creds",), ("echo built",))
+    apps = [
+        _service.service_app(
+            "a-svc", "python:3.12-slim", ["s"], 9000, 1, 512, 0, 1, 60, attach=attach
+        ),
+        _service.web_function_app(
+            "a-web", "python:3.12-slim", ["s"], 9000, 1, 512, 0, 1, 60, True, None, attach=attach
+        ),
+        _service.command_function_app(
+            "a-cmd", "python:3.12-slim", None, 1, 512, None, 0, 1, 600, None, attach=attach
+        ),
+    ]
+    assert all(app.app_id is None for app in apps)

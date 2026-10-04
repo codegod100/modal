@@ -1,6 +1,6 @@
 [project]
 name = "modal-mcp"
-version = "0.3.0"
+version = "0.4.0"
 description = "MCP server exposing caller-scoped Modal Python SDK operations"
 requires-python = ">=3.10"
 dependencies = [

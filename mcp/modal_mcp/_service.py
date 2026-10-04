@@ -1,6 +1,42 @@
 """Build a typed service definition without importing caller-supplied code."""
 
+from dataclasses import dataclass, field
+
 import modal
+
+
+@dataclass(frozen=True)
+class Attachments:
+    """Named Modal objects and build steps a deployed app may use.
+
+    volumes maps an absolute mount path to a Volume name (created if missing);
+    secrets are Secret names whose keys become environment variables; and
+    image_commands run in the image build on Modal, never on the MCP host.
+    Names resolve in the environment the app deploys to.
+    """
+
+    volumes: dict[str, str] = field(default_factory=dict)
+    secrets: tuple[str, ...] = ()
+    image_commands: tuple[str, ...] = ()
+
+
+def _image(image: str, add_python: str | None, attach: Attachments | None):
+    built = modal.Image.from_registry(image, add_python=add_python)
+    if attach and attach.image_commands:
+        built = built.run_commands(*attach.image_commands)
+    return built
+
+
+def _mounts(attach: Attachments | None) -> dict:
+    options: dict = {}
+    if attach and attach.volumes:
+        options["volumes"] = {
+            path: modal.Volume.from_name(name, create_if_missing=True)
+            for path, name in attach.volumes.items()
+        }
+    if attach and attach.secrets:
+        options["secrets"] = [modal.Secret.from_name(name) for name in attach.secrets]
+    return options
 
 
 def service_app(
@@ -14,12 +50,14 @@ def service_app(
     max_containers: int,
     startup_timeout_seconds: int,
     gpu: str | None = None,
+    *,
+    attach: Attachments | None = None,
 ):
     app = modal.App(name)
     command = list(argv)
 
     @app.server(
-        image=modal.Image.from_registry(image, add_python="3.12"),
+        image=_image(image, "3.12", attach),
         name="service",
         port=port,
         cpu=cpu,
@@ -31,6 +69,7 @@ def service_app(
         serialized=True,
         include_source=False,
         unauthenticated=False,
+        **_mounts(attach),
     )
     class Service:
         @modal.enter()
@@ -61,13 +100,15 @@ def web_function_app(
     public: bool,
     add_python: str | None,
     gpu: str | None = None,
+    *,
+    attach: Attachments | None = None,
 ):
     """A web_server function; unlike App.server it can serve without proxy auth."""
     app = modal.App(name)
     command = list(argv)
 
     @app.function(
-        image=modal.Image.from_registry(image, add_python=add_python),
+        image=_image(image, add_python, attach),
         name="web",
         cpu=cpu,
         memory=memory_mb,
@@ -76,6 +117,7 @@ def web_function_app(
         max_containers=max_containers,
         serialized=True,
         include_source=False,
+        **_mounts(attach),
     )
     @modal.web_server(port, startup_timeout=startup_timeout_seconds, requires_proxy_auth=not public)
     def web():
@@ -99,13 +141,15 @@ def command_function_app(
     max_containers: int,
     timeout_seconds: int,
     add_python: str | None,
+    *,
+    attach: Attachments | None = None,
 ):
     """A plain function that runs argv per call; callers reach it through the SDK."""
     app = modal.App(name)
     setup = list(setup_argv) if setup_argv else None
 
     @app.function(
-        image=modal.Image.from_registry(image, add_python=add_python),
+        image=_image(image, add_python, attach),
         name="run",
         cpu=cpu,
         memory=memory_mb,
@@ -115,6 +159,7 @@ def command_function_app(
         timeout=timeout_seconds,
         serialized=True,
         include_source=False,
+        **_mounts(attach),
     )
     def run(argv: list[str], output_file: str | None = None) -> dict:
         # Serialized and run only in the deployed container. setup runs once per

@@ -40,6 +40,15 @@ The tool does not accept Python source, import caller modules, upload local sour
 or run a shell command on the MCP host. Private registry credentials and arbitrary
 source-based app deployment are outside this tool's scope.
 
+## Volumes, secrets and build steps
+
+All three deploy tools also take `volumes` (`{"/data": "my-volume"}`, created if
+missing), `secrets` (Secret names whose keys become environment variables) and
+`image_commands` (shell commands run on Modal while building the image, for a
+service with no registry image). Names resolve in the environment the app deploys
+to, and build commands never run on the MCP host. Keep `max_containers` at 1 for a
+service that must be the single owner of a mounted data directory.
+
 ## `deploy_web_function` for public websites
 
 `deploy_web_function` takes the same inputs as `deploy_service` but deploys a

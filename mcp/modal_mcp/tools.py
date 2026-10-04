@@ -16,7 +16,7 @@ import modal
 from modal.exception import TimeoutError as ModalTimeoutError
 
 from ._sdk import client_session, environment_name, json_value, require_write
-from ._service import command_function_app, service_app, web_function_app
+from ._service import Attachments, command_function_app, service_app, web_function_app
 
 
 def _positive(value: int, label: str, maximum: int = 10000) -> None:
@@ -49,6 +49,36 @@ def _call_args(args: str | None, kwargs: str | None) -> tuple[list, dict]:
     if not isinstance(kw, dict):
         raise TypeError("kwargs must be a JSON object")
     return pos, kw
+
+
+def _text_list(values: Any, label: str) -> tuple[str, ...]:
+    if values is None:
+        return ()
+    if not isinstance(values, list) or any(
+        not isinstance(v, str) or not v.strip() or "\x00" in v for v in values
+    ):
+        raise ValueError(f"{label} must be an array of non-empty strings")
+    return tuple(values)
+
+
+def _attachments(
+    volumes: dict[str, str] | None, secrets: list[str] | None, image_commands: list[str] | None
+) -> Attachments | None:
+    mounts = {} if volumes is None else volumes
+    if not isinstance(mounts, dict) or any(
+        not isinstance(path, str)
+        or not path.startswith("/")
+        or path.rstrip("/") == ""
+        or ".." in path.split("/")
+        or not isinstance(name, str)
+        or not name.strip()
+        for path, name in mounts.items()
+    ):
+        raise ValueError("volumes must map absolute mount paths (not /) to non-empty Volume names")
+    attach = Attachments(
+        dict(mounts), _text_list(secrets, "secrets"), _text_list(image_commands, "image_commands")
+    )
+    return attach if attach.volumes or attach.secrets or attach.image_commands else None
 
 
 async def _apps(client, environment: str):
@@ -261,6 +291,9 @@ async def deploy_service(
     max_containers: int = 1,
     startup_timeout_seconds: int = 60,
     gpu: str | None = None,
+    volumes: dict[str, str] | None = None,
+    secrets: list[str] | None = None,
+    image_commands: list[str] | None = None,
 ) -> dict:
     """Create or update a named HTTP service via App.server and App.deploy.
 
@@ -268,7 +301,11 @@ async def deploy_service(
     argv runs only inside the service container, which must listen on
     0.0.0.0:port. gpu attaches a GPU to each container (e.g. "L4", "A100",
     "H100:2"). The endpoint requires Modal proxy authentication. This tool
-    accepts no Python source, host file path, or shell command string.
+    accepts no Python source or host file path.
+    volumes maps absolute mount paths to Volume names (created if missing),
+    secrets names Secrets whose keys become environment variables, and
+    image_commands are shell commands run on Modal while building the image
+    (e.g. installing or compiling the service); none run on the MCP host.
     Deploying the same app name replaces its previous definition.
     """
     require_write()
@@ -287,6 +324,7 @@ async def deploy_service(
     if cpu <= 0 or not 0 <= min_containers <= max_containers:
         raise ValueError("cpu must be positive and 0 <= min_containers <= max_containers")
     _gpu(gpu)
+    attach = _attachments(volumes, secrets, image_commands)
     async with client_session() as client:
         env = await environment_name(client, environment)
         definition = service_app(
@@ -300,6 +338,7 @@ async def deploy_service(
             max_containers,
             startup_timeout_seconds,
             gpu,
+            attach=attach,
         )
         await definition.deploy.aio(environment_name=env, client=client)
         server = modal.Server.from_name(app, "service", environment_name=env, client=client)
@@ -328,6 +367,9 @@ async def deploy_web_function(
     max_containers: int = 1,
     startup_timeout_seconds: int = 60,
     gpu: str | None = None,
+    volumes: dict[str, str] | None = None,
+    secrets: list[str] | None = None,
+    image_commands: list[str] | None = None,
 ) -> dict:
     """Create or update a named HTTP service as a Modal web function.
 
@@ -337,8 +379,12 @@ async def deploy_web_function(
     only in the deployed container and must listen on 0.0.0.0:port. Set
     add_python to null for images that already ship Python (e.g.
     python:3.12-slim), where adding another fails the image build. gpu attaches
-    a GPU to each container (e.g. "L4", "A100", "H100:2"). Deploying
-    the same app name replaces its previous definition.
+    a GPU to each container (e.g. "L4", "A100", "H100:2").
+    volumes maps absolute mount paths to Volume names (created if missing),
+    secrets names Secrets whose keys become environment variables, and
+    image_commands are shell commands run on Modal while building the image
+    (e.g. installing or compiling the service); none run on the MCP host.
+    Deploying the same app name replaces its previous definition.
     """
     require_write()
     if not app.strip() or not image.strip():
@@ -356,6 +402,7 @@ async def deploy_web_function(
     if cpu <= 0 or not 0 <= min_containers <= max_containers:
         raise ValueError("cpu must be positive and 0 <= min_containers <= max_containers")
     _gpu(gpu)
+    attach = _attachments(volumes, secrets, image_commands)
     async with client_session() as client:
         env = await environment_name(client, environment)
         definition = web_function_app(
@@ -371,6 +418,7 @@ async def deploy_web_function(
             public,
             add_python,
             gpu,
+            attach=attach,
         )
         await definition.deploy.aio(environment_name=env, client=client)
         function = modal.Function.from_name(app, "web", environment_name=env, client=client)
@@ -406,6 +454,9 @@ async def deploy_command_function(
     min_containers: int = 0,
     max_containers: int = 1,
     timeout_seconds: int = 600,
+    volumes: dict[str, str] | None = None,
+    secrets: list[str] | None = None,
+    image_commands: list[str] | None = None,
 ) -> dict:
     """Create or update a function named run that executes a command per call.
 
@@ -416,6 +467,10 @@ async def deploy_command_function(
     stderr and, when output_file exists, its bytes as output_base64. gpu
     attaches a GPU (e.g. "L4", "H100:2"); timeout_seconds covers setup plus one
     call. Commands run only in the deployed container, never on the MCP host.
+    volumes maps absolute mount paths to Volume names (created if missing),
+    secrets names Secrets whose keys become environment variables, and
+    image_commands are shell commands run on Modal while building the image
+    (e.g. installing or compiling the service); none run on the MCP host.
     Deploying the same app name replaces its previous definition.
     """
     require_write()
@@ -429,6 +484,7 @@ async def deploy_command_function(
     if cpu <= 0 or not 0 <= min_containers <= max_containers:
         raise ValueError("cpu must be positive and 0 <= min_containers <= max_containers")
     _gpu(gpu)
+    attach = _attachments(volumes, secrets, image_commands)
     async with client_session() as client:
         env = await environment_name(client, environment)
         definition = command_function_app(
@@ -442,6 +498,7 @@ async def deploy_command_function(
             max_containers,
             timeout_seconds,
             add_python,
+            attach=attach,
         )
         await definition.deploy.aio(environment_name=env, client=client)
         return {
