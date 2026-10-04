@@ -2,6 +2,8 @@
 // "cell" -- with its own SQLite database.
 export class Room {
   constructor(ctx, env) {
+    // The global id: derived from the room name, the same on every node.
+    this.id = ctx.id.toString();
     this.sql = ctx.storage.sql;
     this.sql.exec(`CREATE TABLE IF NOT EXISTS messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,7 +23,7 @@ export class Room {
     const messages = this.sql
       .exec("SELECT id, text, at FROM messages ORDER BY id DESC LIMIT 50")
       .toArray();
-    return Response.json({ messages });
+    return Response.json({ id: this.id, messages });
   }
 }
 
@@ -47,17 +49,20 @@ const PAGE = `<!doctype html>
   body { font: 16px/1.5 system-ui, sans-serif; max-width: 36rem; margin: 2rem auto; padding: 0 1rem; }
   input, button { font: inherit; padding: .4rem .6rem; }
   li { margin: .25rem 0; } small { color: #777; }
+  code { font-size: .8em; word-break: break-all; }
 </style>
 <h1>celld on Modal</h1>
 <p>Each room is a Durable Object with its own SQLite database.</p>
 <p><label>Room <input id="room" value="lobby"></label></p>
+<p>Durable Object id <code id="id"></code></p>
 <form id="form"><input id="text" placeholder="Say something" required> <button>Post</button></form>
 <ul id="list"></ul>
 <script>
   const $ = (id) => document.getElementById(id);
   async function load(init) {
     const res = await fetch("/rooms/" + encodeURIComponent($("room").value), init);
-    const { messages = [] } = await res.json();
+    const { id = "", messages = [] } = await res.json();
+    $("id").textContent = id;
     $("list").replaceChildren(...messages.map((m) => {
       const li = document.createElement("li");
       li.textContent = m.text + " ";

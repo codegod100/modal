@@ -18,7 +18,7 @@ Then open the printed URL, or:
 | file | what |
 |---|---|
 | `worker/wrangler.jsonc` | an ordinary Wrangler config: one `Room` Durable Object class |
-| `worker/index.js` | the Worker: `/` serves a page, `/rooms/NAME` routes to that room's object |
+| `worker/index.js` | the Worker: `/` serves a page, `/rooms/NAME` routes to that room's object and returns its global id and messages |
 | `app.py` | the Modal app: installs celld and esbuild, runs `celld dev` behind `@modal.web_server` |
 
 The Worker knows nothing about Modal. `celld dev worker` runs it unchanged on
