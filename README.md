@@ -11,6 +11,14 @@ HTTP service deployment through the public Modal Python SDK. Runs over stdio
 with a local profile or over HTTP with caller-scoped Modal authentication.
 See [mcp/README.md](mcp/README.md).
 
+## `celld/` -- celld on Modal
+
+A Workers + Durable Objects app on [celld](https://celld.dev), served from one
+Modal container with its cell state on a Volume. See
+[celld/README.md](celld/README.md).
+
+    modal deploy celld/app.py
+
 ## `arch_nix.py` -- Arch Linux + nix
 
     modal run arch_nix.py          # verifies nix, publishes arch-nix:latest
