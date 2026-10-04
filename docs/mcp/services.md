@@ -49,6 +49,10 @@ service with no registry image). Names resolve in the environment the app deploy
 to, and build commands never run on the MCP host. Keep `max_containers` at 1 for a
 service that must be the single owner of a mounted data directory.
 
+`create_sandbox` takes `volumes` and `secrets` too. With a Secret holding
+`MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, a sandbox can run `modal deploy`, which
+is how this server can redeploy itself from `main`.
+
 ## `deploy_web_function` for public websites
 
 `deploy_web_function` takes the same inputs as `deploy_service` but deploys a

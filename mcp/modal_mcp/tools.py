@@ -522,12 +522,19 @@ async def create_sandbox(
     memory_mb: int | None = None,
     gpu: str | None = None,
     environment: str | None = None,
+    volumes: dict[str, str] | None = None,
+    secrets: list[str] | None = None,
 ) -> dict:
-    """Create a sandbox via the SDK; optional command runs inside the sandbox."""
+    """Create a sandbox via the SDK; optional command runs inside the sandbox.
+
+    volumes maps absolute mount paths to Volume names (created if missing) and
+    secrets names Secrets whose keys become environment variables.
+    """
     require_write()
     _positive(timeout_seconds, "timeout_seconds", 86400)
     if idle_timeout_seconds is not None:
         _positive(idle_timeout_seconds, "idle_timeout_seconds", 86400)
+    attach = _attachments(volumes, secrets, None)
     async with client_session() as client:
         env = await environment_name(client, environment)
         app = await modal.App.lookup.aio(
@@ -544,6 +551,16 @@ async def create_sandbox(
             cpu=cpu,
             memory=memory_mb,
             gpu=gpu,
+            volumes={
+                path: modal.Volume.from_name(
+                    name, create_if_missing=True, environment_name=env, client=client
+                )
+                for path, name in (attach.volumes if attach else {}).items()
+            },
+            secrets=[
+                modal.Secret.from_name(name, environment_name=env, client=client)
+                for name in (attach.secrets if attach else ())
+            ],
         )
         return {
             "sandbox_id": sandbox.object_id,

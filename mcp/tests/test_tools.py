@@ -183,6 +183,8 @@ async def test_sdk_sandbox_creation_and_remote_exec(sdk, monkeypatch):
     assert create.aio.call_args.kwargs["client"] is sdk.client
     assert create.aio.call_args.kwargs["app"] is app
     assert create.aio.call_args.kwargs["memory"] == 1024
+    assert create.aio.call_args.kwargs["volumes"] == {}
+    assert create.aio.call_args.kwargs["secrets"] == []
     process = NS(stdout=NS(read=method("abcdef")), stderr=NS(read=method("err")), wait=method(7))
     sandbox = NS(exec=method(process), terminate=method())
     attach = method(sandbox)
@@ -296,4 +298,29 @@ async def test_secret_creation_and_explicit_merge_do_not_return_values(sdk, monk
 async def test_invalid_secret_entries_fail_before_sdk(sdk, entries):
     with pytest.raises(ValueError):
         await tools.create_secret("name", entries)
+    sdk.factory.assert_not_called()
+
+
+async def test_sandbox_mounts_volumes_and_secrets_in_its_environment(sdk, monkeypatch):
+    monkeypatch.setattr(modal.App, "lookup", method(app_handle()))
+    create = method(NS(object_id="sb-x"))
+    monkeypatch.setattr(modal.Sandbox, "create", create)
+    monkeypatch.setattr(modal.Image, "from_registry", Mock(return_value=object()))
+    volume, secret = object(), object()
+    volume_lookup = Mock(return_value=volume)
+    secret_lookup = Mock(return_value=secret)
+    monkeypatch.setattr(modal.Volume, "from_name", volume_lookup)
+    monkeypatch.setattr(modal.Secret, "from_name", secret_lookup)
+    await tools.create_sandbox(volumes={"/data": "store"}, secrets=["token"], environment="dev")
+    volume_lookup.assert_called_once_with(
+        "store", create_if_missing=True, environment_name="dev", client=sdk.client
+    )
+    secret_lookup.assert_called_once_with("token", environment_name="dev", client=sdk.client)
+    assert create.aio.call_args.kwargs["volumes"] == {"/data": volume}
+    assert create.aio.call_args.kwargs["secrets"] == [secret]
+
+
+async def test_invalid_sandbox_attachments_fail_before_sdk(sdk):
+    with pytest.raises(ValueError):
+        await tools.create_sandbox(volumes={"relative": "store"})
     sdk.factory.assert_not_called()

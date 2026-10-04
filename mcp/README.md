@@ -121,6 +121,10 @@ source-based app deployment are outside this tool's scope.
   the registry image (and `add_python`). Use them to install or compile a service
   that has no registry image. They never run on the MCP host.
 
+`create_sandbox` takes `volumes` and `secrets` too. With a Secret holding
+`MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, a sandbox can run `modal deploy`, which
+is how this server can redeploy itself from `main`.
+
 Names resolve in the environment the app deploys to. For example, an S3 store:
 
 ```json
