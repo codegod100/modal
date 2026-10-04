@@ -18,37 +18,40 @@ Then open the printed URL, or:
 |---|---|
 | `worker/wrangler.jsonc` | an ordinary Wrangler config: one `Room` Durable Object class |
 | `worker/index.js` | the Worker: `/` serves a page, `/rooms/NAME` routes to that room's object and returns its global id and messages |
-| `app.py` | the Modal app: installs celld and esbuild, runs `celld dev` behind `@modal.web_server` |
+| `app.py` | the Modal app: installs celld and esbuild, runs one celld node in fleet mode behind `@modal.web_server`, with the `minio` app as its bucket |
 
 The Worker knows nothing about Modal. `celld dev worker` runs it unchanged on
 a laptop, and `wrangler deploy` would run it on Cloudflare.
 
 ## How it runs
 
-One container runs one celld node in `celld dev` mode on local disk. A single
-node acknowledges a write only once it is in its object store,
-`.celld/dev/objects.sqlite3`, and that one file is enough to bring every cell
-back. So `app.py` keeps a copy of it on the `celld-example-state` Volume:
+One container runs one celld node in fleet mode against an S3 bucket,
+`celld-example`, on the `minio` app in this workspace
+(`https://codegod100--minio-web.modal.run`, credentials from the
+`minio-root` Secret). On start, `app.py` creates the bucket if it is missing,
+runs `celld deploy` to publish the Worker to it, and starts
+`celld --bucket s3://celld-example --endpoint ...`.
 
-* restored into place when a container starts,
-* snapshotted with SQLite's backup API every 5 seconds while anything changed,
-* snapshotted once more after a clean shutdown when the container scales down.
+celld keeps each cell's SQLite file on local disk only as a cache. It ships
+every committed write to the bucket as LTX before the Worker sees the write
+succeed, so nothing is lost when a container stops or crashes: the next node
+restores each room from the bucket the first time it is touched. There is no
+Volume and no snapshot loop.
 
-A crash can lose at most the last 5 seconds. SQLite never runs on the Volume
-itself; each snapshot is written to local disk and then copied over.
-`max_containers=1` is deliberate: two containers would be two nodes restoring
-the same snapshot and overwriting each other's.
+The cost is latency. A single node proves each write through the bucket, so
+a write waits on a round trip to MinIO through its public URL: about 0.4 to
+0.9 s here. A room's first request after a restart takes a few more seconds
+while the node takes over its lease and restores it.
 
-Verified on Modal: celld 0.6.1 runs under gVisor as-is (no shim, no VM), and
-the image recipe builds. The snapshot and restore code was exercised against a
-real celld with the Volume stubbed out by a local directory: a kill without
-shutdown, a restore, a clean stop and a second restore kept every message.
+Verified on Modal: `celld diagnose` passes the conditional-write probe
+against MinIO (create, reject-create, update, reject-stale), and rooms written
+before a `kill -9` with the local state wiped, and before a redeploy onto a
+fresh container, came back intact.
 
 ## Going past one node
 
-`celld dev` is a single node with a local object store. A real celld fleet
-shares an S3, GCS or Azure bucket instead, and every node runs
-`celld --bucket s3://... --listen 0.0.0.0:8080 --internal-listen ... --advertise ...`
-after one `celld deploy . --bucket s3://...`. On Modal that would mean a
-bucket secret and private networking between containers (`i6pn=True`) for the
-internal listener. This example stops short of that.
+A second celld node would
+cut write latency a lot, since a write then finishes once a peer holds it
+instead of waiting on the bucket. On Modal that needs private networking
+between containers (`i6pn=True`) and `--advertise` on each node's internal
+listener. This example stops at one node (`max_containers=1`).
