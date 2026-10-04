@@ -164,3 +164,25 @@ async def test_expired_access_token_leaves_refresh_usable(provider):
     assert refresh is not None
     renewed = await provider.exchange_refresh_token(client, refresh, [])
     assert (await provider.load_access_token(renewed.access_token)).claims["workspace"] == "c"
+
+
+async def test_login_page_names_who_receives_the_sign_in(provider):
+    from modal_mcp.auth import _PendingLogin
+
+    client = OAuthClientInformationFull(
+        client_id="c",
+        client_name="<b>Evil</b>",
+        redirect_uris=["https://attacker.test/cb"],
+        token_endpoint_auth_method="none",
+    )
+    params = AuthorizationParams(
+        state="s",
+        scopes=[],
+        code_challenge="c" * 43,
+        redirect_uri="https://attacker.test/cb",
+        redirect_uri_provided_explicitly=True,
+    )
+    provider._logins["id"] = _PendingLogin(client, params, "flow", "wait", "https://modal.test")
+    page = (await provider._login_page(NS(query_params={"id": "id"}))).body.decode()
+    assert "attacker.test" in page
+    assert "&lt;b&gt;Evil&lt;/b&gt;" in page and "<b>Evil</b>" not in page

@@ -33,6 +33,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastmcp.server.auth.providers.in_memory import InMemoryOAuthProvider
 from mcp.server.auth.provider import (
@@ -406,6 +407,12 @@ class ModalTokenFlowProvider(InMemoryOAuthProvider):
         if pending is None:
             return HTMLResponse("<h1>This login link has expired.</h1>", status_code=404)
         url = html.escape(pending.web_url)
+        # Registration is open, so anyone can start a login whose code is sent to
+        # a redirect they control and pass the link to someone else. Approving it
+        # would hand that person the approver's Modal token; naming who receives
+        # the sign-in is what lets the approver notice.
+        app_name = html.escape(pending.client.client_name or "an unnamed app")
+        destination = html.escape(urlsplit(str(pending.params.redirect_uri)).netloc or "unknown")
         # Absolute: a relative path here resolves against /modal/ and silently
         # becomes /modal/modal/login/status, so the page polls a 404 forever and
         # the login never completes.
@@ -423,6 +430,9 @@ class ModalTokenFlowProvider(InMemoryOAuthProvider):
    .muted {{ color: #999; }} }}
 </style>
 <h1>Sign in with Modal</h1>
+<p>This signs <strong>{app_name}</strong> in to your Modal account and sends your
+access to <strong>{destination}</strong>. It can then do anything your Modal token can.
+Continue only if you started this sign-in from that app yourself.</p>
 <p>Approve this server in Modal, then come back here. This page finishes automatically.</p>
 <p><a class="button" href="{url}" target="_blank" rel="noopener">Open Modal sign-in</a></p>
 <p class="muted" id="status">Waiting for approval…</p>
