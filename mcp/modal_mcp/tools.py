@@ -511,6 +511,10 @@ async def deploy_command_function(
 
 
 _SANDBOX_APP = "modal-mcp-sandboxes"
+# Ceilings so a single call cannot reserve a runaway amount of compute.
+_SANDBOX_MAX_CPU = 8.0
+_SANDBOX_MAX_MEMORY_MB = 16_384
+_SANDBOX_MAX_TIMEOUT_SECONDS = 4 * 3600
 
 
 async def create_sandbox(
@@ -531,9 +535,13 @@ async def create_sandbox(
     secrets names Secrets whose keys become environment variables.
     """
     require_write()
-    _positive(timeout_seconds, "timeout_seconds", 86400)
+    _positive(timeout_seconds, "timeout_seconds", _SANDBOX_MAX_TIMEOUT_SECONDS)
     if idle_timeout_seconds is not None:
-        _positive(idle_timeout_seconds, "idle_timeout_seconds", 86400)
+        _positive(idle_timeout_seconds, "idle_timeout_seconds", _SANDBOX_MAX_TIMEOUT_SECONDS)
+    if cpu is not None and not 0 < cpu <= _SANDBOX_MAX_CPU:
+        raise ValueError(f"cpu must be greater than 0 and at most {_SANDBOX_MAX_CPU:g}")
+    if memory_mb is not None:
+        _positive(memory_mb, "memory_mb", _SANDBOX_MAX_MEMORY_MB)
     attach = _attachments(volumes, secrets, None)
     async with client_session() as client:
         env = await environment_name(client, environment)

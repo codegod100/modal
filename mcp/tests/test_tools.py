@@ -198,6 +198,18 @@ async def test_sdk_sandbox_creation_and_remote_exec(sdk, monkeypatch):
         assert call.kwargs["client"] is sdk.client
 
 
+async def test_sandbox_creation_rejects_oversized_requests(sdk):
+    for kwargs in (
+        {"cpu": 64},
+        {"cpu": 0},
+        {"memory_mb": 1_000_000},
+        {"timeout_seconds": 86400},
+        {"idle_timeout_seconds": 86400},
+    ):
+        with pytest.raises(ValueError):
+            await tools.create_sandbox(**kwargs)
+
+
 async def test_sandbox_listing_scopes_environment_and_closes_at_limit(sdk, monkeypatch):
     handle = app_handle()
     from_name = Mock(return_value=NS(apps=NS(list=method([handle]))))
