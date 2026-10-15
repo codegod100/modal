@@ -135,7 +135,7 @@ Names resolve in the environment the app deploys to. For example, an S3 store:
     "apt-get update && apt-get install -y curl git ca-certificates",
     "curl -fsSL https://go.dev/dl/go1.24.8.linux-amd64.tar.gz | tar -C /usr/local -xz && git clone -q --depth 1 -b RELEASE.2025-10-15T17-29-55Z https://github.com/minio/minio /src && cd /src && CGO_ENABLED=0 /usr/local/go/bin/go build -trimpath -o /usr/local/bin/minio . && rm -rf /src /usr/local/go /root/go /root/.cache"
   ],
-  "argv": ["minio", "server", "/data", "--address", "0.0.0.0:9000"],
+  "argv": ["minio", "server", "/data/store", "--address", "0.0.0.0:9000"],
   "port": 9000,
   "public": true,
   "volumes": {"/data": "minio-data"},

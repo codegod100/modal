@@ -11,12 +11,13 @@ public, and clients sign in with S3 credentials.
 | piece | name |
 |---|---|
 | app / function | `minio` / `web` |
-| data | Volume `minio-data`, mounted at `/data` |
+| data | Volume `minio-data`, mounted at `/data`; MinIO serves `/data/store` |
 | credentials | Secret `minio-root` (`MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`) |
 | release | `RELEASE.2025-10-15T17-29-55Z`, built from source with Go 1.24.8 |
 
 `max_containers = 1` is deliberate: MinIO assumes it alone owns its data
-directory.
+directory. It serves `/data/store` rather than the mount itself, because
+MinIO fails on the Volume's root with "Unable to write to the backend".
 
 Use it from any S3 client with path-style addressing and region `us-east-1`,
 for example:

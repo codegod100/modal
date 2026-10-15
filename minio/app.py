@@ -7,7 +7,7 @@ deployed through the MCP's `deploy_web_function` tool (see mcp/README.md).
 It keeps that deployment's shape -- app `minio`, function `web` -- so the URL,
 the data and the credentials carry over when it is deployed from here.
 
-Objects live on the `minio-data` Volume. The root credentials come from the
+Objects live under `store/` on the `minio-data` Volume. The root credentials come from the
 `minio-root` Secret (MINIO_ROOT_USER / MINIO_ROOT_PASSWORD), which MinIO reads
 from its environment.
 """
@@ -20,7 +20,10 @@ import modal
 MINIO_RELEASE = "RELEASE.2025-10-15T17-29-55Z"
 GO_VERSION = "1.24.8"
 PORT = 9000
-DATA = "/data"
+MOUNT = "/data"
+# MinIO refuses the Volume's root ("Unable to write to the backend"), so it
+# serves a directory inside it. Existing buckets live there.
+DATA = f"{MOUNT}/store"
 
 image = (
     modal.Image.from_registry("debian:bookworm-slim", add_python="3.12")
@@ -41,7 +44,7 @@ app = modal.App("minio", image=image)
     memory=512,
     # MinIO owns its data directory; two servers on one Volume would corrupt it.
     max_containers=1,
-    volumes={DATA: modal.Volume.from_name("minio-data", create_if_missing=True)},
+    volumes={MOUNT: modal.Volume.from_name("minio-data", create_if_missing=True)},
     secrets=[modal.Secret.from_name("minio-root")],
 )
 # Public: clients authenticate with S3 signatures, not Modal proxy tokens.
