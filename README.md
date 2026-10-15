@@ -19,6 +19,13 @@ Modal container with its cell state on a Volume. See
 
     modal deploy celld/app.py
 
+## `minio/` -- MinIO on Modal
+
+An S3-compatible object store in one Modal container, with its objects on a
+Volume. It is the bucket `celld/` uses. See [minio/README.md](minio/README.md).
+
+    modal deploy minio/app.py
+
 ## `arch_nix.py` -- Arch Linux + nix
 
     modal run arch_nix.py          # verifies nix, publishes arch-nix:latest
