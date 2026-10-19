@@ -11,3 +11,18 @@ mkdocs-material = ">=9.5,<10"
 [tasks]
 docs = "mkdocs serve"
 docs-build = "mkdocs build --strict"
+
+# The Modal MCP server (mcp/) and the client that deploys it; the deployed
+# server runs the deploying client's modal version, which must be >= 1.6.
+[feature.mcp.pypi-dependencies]
+modal-mcp = { path = "mcp", editable = true }
+modal = ">=1.6,<2"
+pytest = ">=8"
+pytest-asyncio = ">=0.24"
+
+[feature.mcp.tasks]
+deploy-mcp = { cmd = "modal deploy app.py", cwd = "mcp" }
+test-mcp = { cmd = "python -m pytest -q", cwd = "mcp" }
+
+[environments]
+mcp = ["mcp"]

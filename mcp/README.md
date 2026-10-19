@@ -10,10 +10,9 @@ profile; the hosted server binds each request to that caller's Modal credentials
 ## Run locally
 
 ```bash
-cd mcp
-pip install -e .
-modal token new  # if you do not already have a Modal profile
-claude mcp add modal -- /path/to/mcp/.venv/bin/modal-mcp
+pixi install -e mcp            # from the repo root
+pixi run -e mcp modal token new  # if you do not already have a Modal profile
+claude mcp add modal -- /path/to/modal/.pixi/envs/mcp/bin/modal-mcp
 ```
 
 The vendor CLI above is only for developer setup. Tool operations use SDK clients
@@ -22,9 +21,7 @@ constructed explicitly from the selected profile's credentials.
 ## Host on Modal
 
 ```bash
-cd mcp
-pip install -e .
-modal deploy app.py
+pixi run -e mcp deploy-mcp   # from the repo root
 ```
 
 Deploy with a local `modal` client of 1.6 or newer. Modal runs the deploying
@@ -198,8 +195,7 @@ containers in their own workspace; nothing runs on the MCP host.
 ## Offline verification
 
 ```bash
-pip install -e '.[dev]'
-pytest -q
+pixi run -e mcp test-mcp   # from the repo root
 ruff check .
 ruff format --check .
 mypy modal_mcp
