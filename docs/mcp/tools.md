@@ -32,6 +32,6 @@ write tool.
 | Functions | `get_function_stats`, `call_function`, `spawn_function`, `get_function_call_result`, `cancel_function_call` | `Function.from_name`, stats/remote/spawn, `FunctionCall.from_id`, get/cancel |
 | HTTP services | `deploy_service` | `App.server`, `App.deploy`, `Server.from_name`, `Server.get_url` |
 | Command functions | `deploy_command_function` | `App.function`, `App.deploy` |
-| Web functions | `deploy_web_function` | `App.function`, `web_server`, `App.deploy`, `Function.from_name`, `Function.get_web_url` |
+| Web functions | `deploy_web_function` | `App.function`, `web_server`, `concurrent`, `App.deploy`, `Function.from_name`, `Function.get_web_url` |
 | Sandboxes | `create_sandbox`, `sandbox_exec`, `list_sandboxes`, `terminate_sandbox` | `Sandbox.create`, exec/list/from_id/terminate |
 | Storage | `list_volumes`, `list_volume_files`, `read_volume_file`, `list_secrets`, `create_secret`, `list_dicts`, `list_queues` | Object managers, `Volume.iterdir`/read_file, `Secret.update` |

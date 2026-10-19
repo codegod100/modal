@@ -180,6 +180,7 @@ async def test_web_function_deployment_returns_public_url(sdk, monkeypatch):
         None,
         None,
         attach=None,
+        concurrent_inputs=1,
     )
     definition.deploy.aio.assert_awaited_once_with(environment_name="dev", client=sdk.client)
     lookup.assert_called_once_with("site", "web", environment_name="dev", client=sdk.client)
@@ -231,7 +232,61 @@ def test_real_sdk_accepts_gpu_definitions_without_network():
 async def test_invalid_web_function_request_fails_before_sdk(sdk):
     with pytest.raises(ValueError):
         await tools.deploy_web_function("site", "img", [], 8000)
+    with pytest.raises(ValueError):
+        await tools.deploy_web_function("site", "img", ["server"], 8000, concurrent_inputs=0)
     sdk.factory.assert_not_called()
+
+
+async def test_concurrent_inputs_reach_definition(sdk, monkeypatch):
+    definition = NS(app_id="ap-web", deploy=NS(aio=AsyncMock()))
+    build = Mock(return_value=definition)
+    monkeypatch.setattr(tools, "web_function_app", build)
+    function = NS(object_id="fu-web", get_web_url=NS(aio=AsyncMock(return_value="https://x")))
+    monkeypatch.setattr(modal.Function, "from_name", Mock(return_value=function))
+    await tools.deploy_web_function("pds", "img", ["server"], 8787, concurrent_inputs=200)
+    assert build.call_args.kwargs["concurrent_inputs"] == 200
+
+
+@pytest.mark.parametrize(("inputs", "wrapped"), [(1, False), (200, True)])
+def test_web_function_definition_is_concurrent_only_when_asked(monkeypatch, inputs, wrapped):
+    calls = []
+    app = NS(function=lambda **kw: lambda fn: calls.append(("function", fn)) or fn)
+    monkeypatch.setattr(modal, "App", Mock(return_value=app))
+    monkeypatch.setattr(modal.Image, "from_registry", Mock(return_value=object()))
+    monkeypatch.setattr(modal, "web_server", lambda port, **kw: lambda fn: ("web", fn))
+
+    def concurrent(max_inputs):
+        calls.append(("concurrent", max_inputs))
+        return lambda fn: ("concurrent", fn)
+
+    monkeypatch.setattr(modal, "concurrent", concurrent)
+    _service.web_function_app(
+        "pds", "img", ["server"], 8787, 1, 512, 0, 1, 60, True, None, concurrent_inputs=inputs
+    )
+    registered = calls[-1][1]
+    if wrapped:
+        assert calls[0] == ("concurrent", inputs) and registered[0] == "concurrent"
+        assert registered[1][0] == "web"
+    else:
+        assert [c[0] for c in calls] == ["function"] and registered[0] == "web"
+
+
+def test_real_sdk_accepts_concurrent_web_function_without_network():
+    app = _service.web_function_app(
+        "offline-pds",
+        "python:3.12-slim",
+        ["server"],
+        8787,
+        1,
+        512,
+        1,
+        1,
+        60,
+        True,
+        None,
+        concurrent_inputs=200,
+    )
+    assert app.app_id is None
 
 
 @pytest.mark.parametrize("public", [True, False])

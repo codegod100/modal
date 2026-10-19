@@ -370,6 +370,7 @@ async def deploy_web_function(
     volumes: dict[str, str] | None = None,
     secrets: list[str] | None = None,
     image_commands: list[str] | None = None,
+    concurrent_inputs: int = 1,
 ) -> dict:
     """Create or update a named HTTP service as a Modal web function.
 
@@ -384,6 +385,9 @@ async def deploy_web_function(
     secrets names Secrets whose keys become environment variables, and
     image_commands are shell commands run on Modal while building the image
     (e.g. installing or compiling the service); none run on the MCP host.
+    concurrent_inputs is how many requests one container serves at once
+    (default 1); raise it for servers that hold connections open, such as
+    websockets or streaming, or with max_containers=1.
     Deploying the same app name replaces its previous definition.
     """
     require_write()
@@ -399,6 +403,7 @@ async def deploy_web_function(
     _positive(memory_mb, "memory_mb", 1_000_000)
     _positive(max_containers, "max_containers", 1000)
     _positive(startup_timeout_seconds, "startup_timeout_seconds", 3600)
+    _positive(concurrent_inputs, "concurrent_inputs", 1000)
     if cpu <= 0 or not 0 <= min_containers <= max_containers:
         raise ValueError("cpu must be positive and 0 <= min_containers <= max_containers")
     _gpu(gpu)
@@ -419,6 +424,7 @@ async def deploy_web_function(
             add_python,
             gpu,
             attach=attach,
+            concurrent_inputs=concurrent_inputs,
         )
         await definition.deploy.aio(environment_name=env, client=client)
         function = modal.Function.from_name(app, "web", environment_name=env, client=client)

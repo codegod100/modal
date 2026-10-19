@@ -102,12 +102,29 @@ def web_function_app(
     gpu: str | None = None,
     *,
     attach: Attachments | None = None,
+    concurrent_inputs: int = 1,
 ):
-    """A web_server function; unlike App.server it can serve without proxy auth."""
+    """A web_server function; unlike App.server it can serve without proxy auth.
+
+    concurrent_inputs > 1 lets one container take that many requests at once
+    (@modal.concurrent); otherwise a long-lived request such as a websocket
+    holds the container's only slot."""
     app = modal.App(name)
     command = list(argv)
 
-    @app.function(
+    def web():
+        # Serialized and run only in the deployed container. argv is passed
+        # directly, without a shell or host-side execution.
+        import subprocess
+
+        subprocess.Popen(command)
+
+    handler = modal.web_server(
+        port, startup_timeout=startup_timeout_seconds, requires_proxy_auth=not public
+    )(web)
+    if concurrent_inputs > 1:
+        handler = modal.concurrent(max_inputs=concurrent_inputs)(handler)
+    app.function(
         image=_image(image, add_python, attach),
         name="web",
         cpu=cpu,
@@ -118,14 +135,7 @@ def web_function_app(
         serialized=True,
         include_source=False,
         **_mounts(attach),
-    )
-    @modal.web_server(port, startup_timeout=startup_timeout_seconds, requires_proxy_auth=not public)
-    def web():
-        # Serialized and run only in the deployed container. argv is passed
-        # directly, without a shell or host-side execution.
-        import subprocess
-
-        subprocess.Popen(command)
+    )(handler)
 
     return app
 
