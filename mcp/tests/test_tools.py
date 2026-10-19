@@ -164,52 +164,6 @@ async def test_call_result_polling_and_cancellation(sdk, monkeypatch):
         assert item.kwargs["client"] is sdk.client
 
 
-async def test_sdk_sandbox_creation_and_remote_exec(sdk, monkeypatch):
-    app = app_handle()
-    lookup = method(app)
-    monkeypatch.setattr(modal.App, "lookup", lookup)
-    create = method(NS(object_id="sb-sandbox"))
-    monkeypatch.setattr(modal.Sandbox, "create", create)
-    image_lookup = Mock(return_value=object())
-    monkeypatch.setattr(modal.Image, "from_registry", image_lookup)
-    result = await tools.create_sandbox(
-        command="echo hello", cpu=2, memory_mb=1024, environment="dev"
-    )
-    assert result["sandbox_id"] == "sb-sandbox"
-    lookup.aio.assert_awaited_once_with(
-        "modal-mcp-sandboxes", create_if_missing=True, environment_name="dev", client=sdk.client
-    )
-    assert create.aio.call_args.args == ("sh", "-c", "echo hello")
-    assert create.aio.call_args.kwargs["client"] is sdk.client
-    assert create.aio.call_args.kwargs["app"] is app
-    assert create.aio.call_args.kwargs["memory"] == 1024
-    assert create.aio.call_args.kwargs["volumes"] == {}
-    assert create.aio.call_args.kwargs["secrets"] == []
-    process = NS(stdout=NS(read=method("abcdef")), stderr=NS(read=method("err")), wait=method(7))
-    sandbox = NS(exec=method(process), terminate=method())
-    attach = method(sandbox)
-    monkeypatch.setattr(modal.Sandbox, "from_id", attach)
-    result = await tools.sandbox_exec("sb-sandbox", "echo test", workdir="/tmp", max_output_chars=3)
-    assert result["stdout"] == "def" and result["exit_code"] == 7 and result["truncated"]
-    sandbox.exec.aio.assert_awaited_once_with("sh", "-c", "echo test", workdir="/tmp", timeout=120)
-    await tools.terminate_sandbox("sb-sandbox")
-    sandbox.terminate.aio.assert_awaited_once()
-    for call in attach.aio.call_args_list:
-        assert call.kwargs["client"] is sdk.client
-
-
-async def test_sandbox_creation_rejects_oversized_requests(sdk):
-    for kwargs in (
-        {"cpu": 64},
-        {"cpu": 0},
-        {"memory_mb": 1_000_000},
-        {"timeout_seconds": 86400},
-        {"idle_timeout_seconds": 86400},
-    ):
-        with pytest.raises(ValueError):
-            await tools.create_sandbox(**kwargs)
-
-
 async def test_sandbox_listing_scopes_environment_and_closes_at_limit(sdk, monkeypatch):
     handle = app_handle()
     from_name = Mock(return_value=NS(apps=NS(list=method([handle]))))
@@ -310,29 +264,4 @@ async def test_secret_creation_and_explicit_merge_do_not_return_values(sdk, monk
 async def test_invalid_secret_entries_fail_before_sdk(sdk, entries):
     with pytest.raises(ValueError):
         await tools.create_secret("name", entries)
-    sdk.factory.assert_not_called()
-
-
-async def test_sandbox_mounts_volumes_and_secrets_in_its_environment(sdk, monkeypatch):
-    monkeypatch.setattr(modal.App, "lookup", method(app_handle()))
-    create = method(NS(object_id="sb-x"))
-    monkeypatch.setattr(modal.Sandbox, "create", create)
-    monkeypatch.setattr(modal.Image, "from_registry", Mock(return_value=object()))
-    volume, secret = object(), object()
-    volume_lookup = Mock(return_value=volume)
-    secret_lookup = Mock(return_value=secret)
-    monkeypatch.setattr(modal.Volume, "from_name", volume_lookup)
-    monkeypatch.setattr(modal.Secret, "from_name", secret_lookup)
-    await tools.create_sandbox(volumes={"/data": "store"}, secrets=["token"], environment="dev")
-    volume_lookup.assert_called_once_with(
-        "store", create_if_missing=True, environment_name="dev", client=sdk.client
-    )
-    secret_lookup.assert_called_once_with("token", environment_name="dev", client=sdk.client)
-    assert create.aio.call_args.kwargs["volumes"] == {"/data": volume}
-    assert create.aio.call_args.kwargs["secrets"] == [secret]
-
-
-async def test_invalid_sandbox_attachments_fail_before_sdk(sdk):
-    with pytest.raises(ValueError):
-        await tools.create_sandbox(volumes={"relative": "store"})
     sdk.factory.assert_not_called()

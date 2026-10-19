@@ -9,8 +9,8 @@
   documented public SDK has no corresponding management methods. Function stats
   still report container counts. Use Modal's dashboard for those management tasks.
 - `modal_cli` and the CLI/script adapters were removed entirely.
-- `list_sandboxes` filters by live apps in the resolved environment. `sandbox_exec`
-  still runs the explicitly requested command inside a remote sandbox via its SDK.
+- `list_sandboxes` filters by live apps in the resolved environment. Sandboxes
+  cannot be created or exec'd through this server.
 - Storage listings return SDK metadata and default to 100 named objects. Secret
   values are never returned. `create_secret(overwrite=true)` merges supplied keys
   through `Secret.update`; existing unspecified keys remain intact.

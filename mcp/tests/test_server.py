@@ -27,8 +27,6 @@ WRITE = {
     "spawn_function",
     "get_function_call_result",
     "cancel_function_call",
-    "create_sandbox",
-    "sandbox_exec",
     "terminate_sandbox",
     "create_secret",
     "deploy_service",
@@ -63,8 +61,6 @@ async def test_read_only_inventory(monkeypatch, setting):
         ("spawn_function", ("app", "fn")),
         ("get_function_call_result", ("fc-id",)),
         ("cancel_function_call", ("fc-id",)),
-        ("create_sandbox", ()),
-        ("sandbox_exec", ("sb-id", "echo hello")),
         ("terminate_sandbox", ("sb-id",)),
         ("create_secret", ("name", '{"key":"value"}')),
         ("deploy_service", ("app", "image", ["server"], 8080)),
@@ -83,7 +79,7 @@ async def test_read_only_check_still_applies_after_registration(sdk, monkeypatch
     mcp = server.build_mcp()
     monkeypatch.setenv("MODAL_MCP_READ_ONLY", "1")
     async with Client(mcp) as client:
-        result = await client.call_tool("create_sandbox", {}, raise_on_error=False)
+        result = await client.call_tool("terminate_sandbox", {"sandbox_id": "sb-id"}, raise_on_error=False)
     assert result.is_error
     sdk.factory.assert_not_called()
 

@@ -34,7 +34,7 @@ secrets (Secret names exposed as environment variables) and image_commands
 (shell commands run on Modal during the image build, e.g. to compile a service
 that has no registry image). None of them accepts Python source or executes
 commands locally.
-Sandbox commands run inside the selected sandbox through the SDK.
+Sandboxes can be listed and terminated but not created.
 """
 
 # Tools that only read state.
@@ -61,8 +61,6 @@ WRITE_TOOLS = [
     tools.spawn_function,
     tools.get_function_call_result,
     tools.cancel_function_call,
-    tools.create_sandbox,
-    tools.sandbox_exec,
     tools.terminate_sandbox,
     tools.create_secret,
     tools.deploy_service,

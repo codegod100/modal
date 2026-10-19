@@ -49,9 +49,9 @@ service with no registry image). Names resolve in the environment the app deploy
 to, and build commands never run on the MCP host. Keep `max_containers` at 1 for a
 service that must be the single owner of a mounted data directory.
 
-`create_sandbox` takes `volumes` and `secrets` too. With a Secret holding
-`MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, a sandbox can run `modal deploy`, which
-is how this server can redeploy itself from `main`.
+Sandboxes can be listed and terminated but not created: `create_sandbox` and
+`sandbox_exec` were removed because callers kept recreating the
+`modal-mcp-sandboxes` app. Redeploy this server with `pixi run -e mcp deploy-mcp`.
 
 ## `deploy_web_function` for public websites
 
@@ -80,5 +80,5 @@ so no proxy token is involved. Call it with `call_function` (or
 builds. Each call returns `returncode`, `stdout`, `stderr` and, when
 `output_file` exists after a successful run, its bytes as `output_base64`.
 `gpu`, `cpu`, `memory_mb` and `timeout_seconds` (setup plus one call) size the
-container. Like `sandbox_exec`, this lets any signed-in caller run commands in
+container. This lets any signed-in caller run commands in
 containers in their own workspace; nothing runs on the MCP host.
