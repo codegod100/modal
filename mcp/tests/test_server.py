@@ -129,3 +129,39 @@ def test_state_store_follows_the_deployment_environment(monkeypatch, tmp_path):
     store = server._state_store()
     assert isinstance(store, JsonFileStore)
     assert store._path == tmp_path / "auth-state.json"
+
+
+async def test_caller_log_names_client_and_tool_without_breaking_request(capsys):
+    seen = {}
+
+    async def inner(scope, receive, send):
+        seen["body"] = (await receive())["body"]
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    app = server.CallerLog(inner)
+    body = (
+        b'[{"jsonrpc":"2.0","id":1,"method":"initialize","params":'
+        b'{"clientInfo":{"name":"claude-ai","version":"1.0"}}},'
+        b'{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"whoami","arguments":{"x":"secret"}}}]'
+    )
+    chunks = [{"type": "http.request", "body": body[:20], "more_body": True},
+              {"type": "http.request", "body": body[20:]}]
+
+    async def receive():
+        return chunks.pop(0)
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "method": "POST", "path": "/mcp",
+             "headers": [(b"user-agent", b"Claude-User"), (b"authorization", b"Bearer t")]}
+    await app(scope, receive, send)
+    out = capsys.readouterr().out
+    assert "client='claude-ai'" in out and "user_agent='Claude-User'" in out
+    assert "tools/call: 'whoami'" in out
+    assert "secret" not in out and "Bearer" not in out
+    assert seen["body"] == body[:20]
+    assert sent[-1]["body"] == b"ok"

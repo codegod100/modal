@@ -147,7 +147,60 @@ def build_asgi_app(base_url: str | None = None):
         return RedirectResponse("/mcp", status_code=307)
 
     app.router.routes.append(Route("/", _root, methods=["GET", "POST", "DELETE", "OPTIONS"]))
-    return app
+    return CallerLog(app)
+
+
+class CallerLog:
+    """Log who opens MCP sessions and which tools they call.
+
+    Modal's request log shows only method, path and duration, so without this
+    there is no telling which client keeps the container warm. Prints one line
+    per `initialize` (client name/version and User-Agent) and per `tools/call`
+    (tool name). Never logs headers beyond User-Agent, nor arguments.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] != "POST" or scope["path"] != "/mcp":
+            return await self.app(scope, receive, send)
+        chunks, more = [], True
+        while more:
+            message = await receive()
+            chunks.append(message)
+            more = message.get("more_body", False)
+        _log_rpc(scope, b"".join(m.get("body", b"") for m in chunks))
+        replay = iter(chunks)
+
+        async def replayed():
+            return next(replay, None) or await receive()
+
+        return await self.app(scope, replayed, send)
+
+
+def _log_rpc(scope, body: bytes) -> None:
+    import json
+
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return
+    for msg in payload if isinstance(payload, list) else [payload]:
+        if not isinstance(msg, dict):
+            continue
+        method, params = msg.get("method"), msg.get("params") or {}
+        if method == "initialize":
+            info = params.get("clientInfo") or {}
+            headers = dict(scope.get("headers") or [])
+            agent = headers.get(b"user-agent", b"").decode(errors="replace")
+            print(
+                f"mcp initialize: client={info.get('name')!r} "
+                f"version={info.get('version')!r} user_agent={agent!r}",
+                flush=True,
+            )
+        elif method == "tools/call":
+            print(f"mcp tools/call: {params.get('name')!r}", flush=True)
 
 
 def main() -> None:
